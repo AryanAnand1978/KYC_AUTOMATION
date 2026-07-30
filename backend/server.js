@@ -34,6 +34,10 @@ app.get('/health', (req, res) => {
   res.status(200).json({ status: "OK", message: "KYC backend is running." });
 });
 
+app.get('/', (req, res) => {
+  res.send("KYC Automation Backend is running!");
+});
+
 // Create uploads folder structure synchronously
 const createUploadDirs = () => {
   const dirs = [
