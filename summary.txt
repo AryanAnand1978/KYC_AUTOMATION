@@ -1,0 +1,10 @@
+KYC Verification Project Summary
+This project is a full-stack KYC system for verifying user identity through Aadhaar upload, OCR, face matching, and liveness checks.
+The backend is built with Express and MongoDB, using Mongoose to manage verification sessions as database documents.
+The main collection is `sessions`, which stores each user's complete verification journey in one record.
+Each session keeps Aadhaar details, OCR-extracted name and number, image paths, face match score, challenge state, attempts, and status.
+The database starts with a `PENDING` session after Aadhaar processing and moves through `FACE_VERIFIED`, `VERIFIED`, `FAILED`, or `EXPIRED`.
+Session expiration is enforced in both request-time checks and a background cleanup job to protect stale records.
+The DB also stores timestamps such as `createdAt` and `completedAt` to track lifecycle and completion.
+Aadhaar numbers are masked in responses, while image files are stored locally and removed when sessions finish or expire.
+Overall, the database is the core audit trail that keeps the KYC flow traceable, consistent, and easy to verify.
