@@ -5,7 +5,10 @@ const path = require('path');
 const fs = require('fs');
 const connectDB = require('./config/db');
 const kycRoutes = require('./routes/kycRoutes');
+const adminRoutes = require('./routes/adminRoutes');
 const Session = require('./models/Session');
+const { cleanupSessionMedia } = require('./controllers/kycController');
+const { logEvent } = require('./services/auditService');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -27,6 +30,8 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Routes
+// Mount the more specific admin prefix first, then the public KYC routes.
+app.use('/api/admin', adminRoutes);
 app.use('/api', kycRoutes);
 
 // Simple Status Route
@@ -72,22 +77,10 @@ setInterval(async () => {
         session.completedAt = new Date();
         await session.save();
 
-        // Delete associated files
-        if (session.aadhaarImagePath && fs.existsSync(session.aadhaarImagePath)) {
-          fs.unlinkSync(session.aadhaarImagePath);
-        }
-        if (session.aadhaarFacePath && fs.existsSync(session.aadhaarFacePath)) {
-          fs.unlinkSync(session.aadhaarFacePath);
-        }
-        if (session.selfieImagePath && fs.existsSync(session.selfieImagePath)) {
-          fs.unlinkSync(session.selfieImagePath);
-        }
+        await logEvent(session.sessionId, 'SESSION_EXPIRED', 'Session expired by the background cleanup job.');
 
-        // Delete possible challenge image
-        const challengeFramePath = path.join(__dirname, 'uploads', 'selfies', `challenge_${session.sessionId}.jpg`);
-        if (fs.existsSync(challengeFramePath)) {
-          fs.unlinkSync(challengeFramePath);
-        }
+        // Reuse the shared media-cleanup helper (also records MEDIA_CLEANED).
+        await cleanupSessionMedia(session);
 
         console.log(`[Expiry Job] Cleaned up media and expired session: ${session.sessionId}`);
       }

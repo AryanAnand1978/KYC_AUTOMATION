@@ -1,0 +1,22 @@
+PROJECT OVERVIEW: AUTOMATED VIDEO KYC VERIFICATION SYSTEM
+
+1. INTRODUCTION
+
+The Automated Video KYC Verification System is a full-stack web application designed to verify a person's identity remotely.
+
+2. PROJECT IDEA
+
+The central idea is to replace a slow, manual identity-checking procedure with a guided automated workflow. The applicant uploads an Aadhaar card image, the system extracts relevant identity information using OCR, and a face is detected from the document. The applicant then captures a live selfie through the browser camera. The system compares both faces and, if the match is successful, assigns a random liveness challenge. Completing the challenge provides evidence that the person is physically present rather than using a static photograph.
+
+3. OBJECTIVES
+
+The project intends to create a verification experience. Its objectives are to reduce manual effort, detect mismatched identities, prevent basic photo-based impersonation, provide immediate verification results, manage time-limited sessions, and maintain an auditable record of important events. It also demonstrates how a web system connects a React frontend with a Node.js backend and MongoDB database.
+
+4. USE CASES
+
+The primary use case is online identity verification for a new customer. A user submits an identity document, completes face verification, follows the liveness instruction, and receives a verified, failed, or expired result. A secondary use case is demonstration and academic evaluation, where an evaluator can observe the complete KYC pipeline. The admin use case allows an authorized operator to search records, filter sessions, inspect audit timelines, and view analytics such as status distribution, average face score, pass rate, and challenge success rate.
+
+
+5. LIMITATIONS AND OUTCOME
+
+This is a prototype and does not connect to a government Aadhaar database or provide complete production fraud detection. Nevertheless, it demonstrates a practical, modular identity-verification architecture with clear security, persistence, and monitoring concepts. The final outcome is a working academic project that shows how a real-world KYC process can be automated, measured, and explained through software engineering and database principles.

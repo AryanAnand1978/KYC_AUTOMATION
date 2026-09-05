@@ -10,7 +10,15 @@ const sessionSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
-  aadhaarNumber: {
+  // PII is stored metadata-only. We keep a salted, non-reversible hash
+  // (for distinct-applicant analytics) and a masked value (for display).
+  // The raw Aadhaar number is never persisted.
+  aadhaarHash: {
+    type: String,
+    default: '',
+    index: true
+  },
+  aadhaarMasked: {
     type: String,
     default: ''
   },
@@ -44,14 +52,27 @@ const sessionSchema = new mongoose.Schema({
     enum: ["PENDING", "FACE_VERIFIED", "VERIFIED", "FAILED", "EXPIRED"],
     default: "PENDING"
   },
-  createdAt: {
-    type: Date,
-    default: Date.now
+  // Request context captured at upload time, for audit + analytics.
+  ipAddress: {
+    type: String,
+    default: ''
+  },
+  userAgent: {
+    type: String,
+    default: ''
   },
   completedAt: {
     type: Date
   }
+}, {
+  // Supplies createdAt + updatedAt automatically.
+  timestamps: true
 });
+
+// Cron expiry scan + admin list ordering.
+sessionSchema.index({ status: 1, createdAt: 1 });
+// Time-series analytics (verifications over time).
+sessionSchema.index({ createdAt: 1 });
 
 // Helper to check if session has expired (10 minutes)
 sessionSchema.methods.isExpired = function() {

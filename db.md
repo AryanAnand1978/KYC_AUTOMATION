@@ -4,19 +4,31 @@
 
 This project uses **MongoDB** with **Mongoose** to store and manage KYC verification sessions.
 
-The database stores the complete verification lifecycle for one user session:
-- Aadhaar upload details
-- OCR-extracted identity fields
+The database is a **first-class part of the product**, not just transient session scratch space. Every verification becomes a permanent, secured, queryable record with a full audit trail of its lifecycle, and the data is surfaced through an admin dashboard whose analytics are driven by MongoDB aggregation.
+
+The database stores:
+- Aadhaar upload details (image paths, cleared on terminal states)
+- OCR-extracted identity fields (name)
+- **secured** Aadhaar identity: a salted SHA-256 hash + a masked value (never recoverable plaintext)
+- request metadata (IP address, user agent) captured at upload
 - face match metadata
 - challenge status and attempts
 - final verification outcome
-- timestamps for expiry and completion
+- creation / update / completion timestamps
+- a separate, append-only **audit trail** of every lifecycle event
 
-Main collection:
-- `sessions`
+Main collections:
+- `sessions` — one persistent document per verification
+- `auditevents` — append-only lifecycle events, linked to a session by `sessionId`
 
-Main model:
+Main models:
 - `backend/models/Session.js`
+- `backend/models/AuditEvent.js`
+
+Supporting modules:
+- `backend/services/auditService.js` — fire-and-forget `logEvent()` helper
+- `backend/controllers/adminController.js` + `backend/routes/adminRoutes.js` — admin list / detail / analytics
+- `backend/middleware/adminAuth.js` — shared-key `Authorization: Bearer` guard
 
 Connection setup:
 - `backend/config/db.js`
@@ -60,8 +72,14 @@ Each document in `sessions` tracks one verification journey.
 - `name` (String, default `""`)
   - Extracted from Aadhaar OCR
 
-- `aadhaarNumber` (String, default `""`)
-  - Raw extracted value (response masking is handled in controller)
+- `aadhaarHash` (String, default `""`, indexed)
+  - Salted SHA-256 digest of the digits-only Aadhaar number: `sha256(PEPPER + ":" + digits)`
+  - Not reversible; enables distinct-applicant analytics without storing PII
+  - The pepper comes from `process.env.AADHAAR_HASH_PEPPER`
+
+- `aadhaarMasked` (String, default `""`)
+  - Display-safe value, e.g. `XXXX XXXX 9012`; this is what API responses return
+  - No plaintext Aadhaar number is ever persisted
 
 - `aadhaarImagePath` (String, default `""`)
   - Stored file path for uploaded Aadhaar image
@@ -84,11 +102,18 @@ Each document in `sessions` tracks one verification journey.
 - `status` (String enum)
   - Values: `PENDING`, `FACE_VERIFIED`, `VERIFIED`, `FAILED`, `EXPIRED`
 
-- `createdAt` (Date, default `Date.now`)
-  - Session creation timestamp
+- `ipAddress` (String, default `""`)
+  - Requester IP captured at Aadhaar upload (`req.ip`), for audit/analytics
+
+- `userAgent` (String, default `""`)
+  - Requester user-agent captured at Aadhaar upload
+
+- `createdAt` / `updatedAt` (Date)
+  - Supplied automatically by Mongoose `{ timestamps: true }`
+  - `isExpired()` still reads `this.createdAt` for the 10-minute window
 
 - `completedAt` (Date, optional)
-  - Set when session ends (`VERIFIED`, `FAILED`, or cron-expired flow)
+  - Set when session ends (`VERIFIED`, `FAILED`, or any `EXPIRED` path)
 
 ### Model Method
 
@@ -96,6 +121,36 @@ Each document in `sessions` tracks one verification journey.
   - Returns true when:
     - status already `EXPIRED`, or
     - current time - `createdAt` > 10 minutes
+
+---
+
+## 3A. Audit Trail Model (AuditEvent)
+
+### File: `backend/models/AuditEvent.js`
+
+A separate `auditevents` collection records every meaningful lifecycle event. It is kept **separate from the session document** (not an embedded array) so the session stays lean, events can grow unbounded, and cross-session analytics via aggregation are cheap.
+
+### Fields
+
+- `sessionId` (String, required, indexed) — links to `Session.sessionId`
+- `type` (String enum, required) — the event kind (see list below)
+- `message` (String) — short human-readable description
+- `meta` (Mixed, default `{}`) — structured payload (e.g. `{ score, threshold }`, `{ challenge, attempt, success }`)
+- `createdAt` / `updatedAt` — via `{ timestamps: true }`
+
+### Event types
+
+`SESSION_CREATED`, `OCR_EXTRACTED`, `FACE_CROPPED`, `FACE_COMPARED`, `FACE_PASSED`, `FACE_FAILED`, `CHALLENGE_ASSIGNED`, `CHALLENGE_ATTEMPTED`, `CHALLENGE_PASSED`, `CHALLENGE_FAILED`, `SESSION_VERIFIED`, `SESSION_FAILED`, `SESSION_EXPIRED`, `MEDIA_CLEANED`.
+
+### Indexes
+
+- `{ sessionId: 1, createdAt: 1 }` — fetch a session's timeline in order
+- `{ type: 1 }` — analytics grouped by event kind
+- `{ createdAt: 1 }` — time-range scans
+
+### Logging helper
+
+`backend/services/auditService.js` exposes `logEvent(sessionId, type, message = '', meta = {})`. It wraps `AuditEvent.create(...)` in try/catch and never throws, so an audit-logging failure can never break the verification flow (fire-and-forget).
 
 ---
 
@@ -232,6 +287,55 @@ DB workflow:
 
 ---
 
+> **Audit logging:** every step above also records `AuditEvent` rows via `logEvent(...)`.
+> `uploadAadhaar` logs `SESSION_CREATED`, `OCR_EXTRACTED`, `FACE_CROPPED`; `verifyFace` logs
+> `FACE_COMPARED` then `FACE_PASSED`+`CHALLENGE_ASSIGNED` or `FACE_FAILED`+`SESSION_FAILED`;
+> `verifyChallenge` logs `CHALLENGE_ATTEMPTED` then `CHALLENGE_PASSED`+`SESSION_VERIFIED`,
+> `CHALLENGE_FAILED`+`CHALLENGE_ASSIGNED` (retry), or `CHALLENGE_FAILED`+`SESSION_FAILED`;
+> expiry paths log `SESSION_EXPIRED`; media cleanup logs `MEDIA_CLEANED`.
+
+---
+
+## 5A. Admin & Analytics API
+
+Controller: `backend/controllers/adminController.js` · Routes: `backend/routes/adminRoutes.js`
+
+All admin routes are mounted at `/api/admin` (**before** the public `/api` routes) and sit behind:
+1. `adminLimiter` — an `express-rate-limit` instance (200 requests / 5 min).
+2. `requireAdmin` — reads `Authorization: Bearer <token>`, constant-time compares it
+   (`crypto.timingSafeEqual`) against `process.env.ADMIN_TOKEN`; returns `401` on
+   missing/mismatch and fails closed with `500` if `ADMIN_TOKEN` is unset.
+
+### A) `GET /api/admin/verify`
+- Lightweight token check used by the login screen. Returns `{ ok: true }` when the key is valid.
+
+### B) `GET /api/admin/verifications`
+- Paginated, filterable list. Query params: `page`, `limit` (max 100), `status`, `q`
+  (regex on name / masked Aadhaar), `from`, `to` (createdAt range), `sort`
+  (`newest` | `oldest` | `score`).
+- Returns `{ items, total, page, pages, limit }`. Only masked, non-PII fields are selected;
+  disk paths and the hash are never returned in the list.
+
+### C) `GET /api/admin/verifications/:sessionId`
+- Returns `{ verification, events }` — the record (masked fields + `aadhaarHash`, `ipAddress`,
+  `userAgent`, `updatedAt`) plus its full `AuditEvent` timeline sorted ascending
+  (`{ createdAt: 1, _id: 1 }`).
+
+### D) `GET /api/admin/stats`
+- Dashboard analytics computed **entirely with MongoDB aggregation** (`Promise.all` of pipelines):
+  - `totals` — counts by status (`$group` on `$status`), `today`, and distinct applicants
+    (`$group` on `aadhaarHash` → `$count`).
+  - `rates` — `passRate`, `avgFaceMatchScore` (`$avg` over sessions with score > 0),
+    `challengeSuccessRate`.
+  - `statusBreakdown` — count per status (all five).
+  - `verificationsOverTime` — last 30 days grouped by day (`$dateToString %Y-%m-%d`) with
+    total / verified / failed via `$cond`.
+  - `challengeBreakdown` — from `CHALLENGE_ATTEMPTED` audit events grouped by `meta.challenge`
+    and `meta.success`.
+- This endpoint is the piece that visibly showcases the database as a product feature.
+
+---
+
 ## 6. Expiry and Cleanup Workflow
 
 The project has **two expiry enforcement layers**:
@@ -260,37 +364,55 @@ This protects against stale sessions even if no further API requests are made.
 ## 7. Data Privacy and Storage Notes
 
 ### Current behavior
-- Aadhaar number stored in DB as extracted text
-- Aadhaar number returned masked (e.g. `XXXX XXXX 1234`)
-- image files stored on local disk under:
+- **No plaintext Aadhaar number is stored.** At upload the number is converted to:
+  - a salted SHA-256 hash (`aadhaarHash`, using `AADHAAR_HASH_PEPPER`), and
+  - a masked display value (`aadhaarMasked`, e.g. `XXXX XXXX 1234`).
+- API responses only ever expose the masked value.
+- Image files stored on local disk under:
   - `backend/uploads/aadhaar`
   - `backend/uploads/selfies`
-- files are deleted on terminal states or expiry paths
+- Biometric files are deleted on terminal states or expiry paths (a `MEDIA_CLEANED` audit event records this).
+- Every status transition is captured in the `auditevents` collection.
 
-### Important improvement suggestions
-- Encrypt Aadhaar number at rest
-- Add MongoDB TTL strategy if archival policy allows hard deletion
-- Add audit logs for status transitions
-- Move media to object storage (S3/GCS/Azure Blob) for scale
-- Use hashed or tokenized PII identifiers in logs
+### Done in this upgrade
+- ✅ Store secured, non-reversible PII at rest (salted hash + mask) instead of plaintext.
+- ✅ Add audit logs for status transitions (`AuditEvent` collection + `logEvent`).
+- ✅ Use hashed/tokenized PII identifiers for analytics (distinct applicants by `aadhaarHash`).
+- A one-off migration (`npm run migrate:pii`, `backend/scripts/migratePII.js`) converts any legacy
+  documents that still hold a plaintext `aadhaarNumber`.
+
+### Remaining improvement suggestions
+- Add a MongoDB TTL strategy if an archival/retention policy allows hard deletion.
+- Move media to object storage (S3/GCS/Azure Blob) for scale.
+- Add per-operator admin identity (JWT accounts) instead of a single shared key.
+- Consider field-level encryption or a KMS-managed pepper for the hash.
 
 ---
 
 ## 8. Indexing and Performance Considerations
 
-### Already present
-- Unique index on `sessionId` via schema `unique: true`
+### Implemented indexes
 
-### Recommended indexes
-- `status` index for expiry scans
-- compound index `{ status: 1, createdAt: 1 }` for cron query efficiency
-- optional index on `createdAt` for analytics/reporting
+**`sessions`**
+- Unique index on `sessionId` (schema `unique: true`)
+- `{ status: 1, createdAt: 1 }` — cron expiry scan + admin list filtering/sort
+- `{ createdAt: 1 }` — analytics / reporting time-range scans
+- `{ aadhaarHash: 1 }` — distinct-applicant analytics and hash lookups
 
-Example (future migration idea):
+**`auditevents`**
+- `{ sessionId: 1, createdAt: 1 }` — ordered per-session timeline
+- `{ type: 1 }` — analytics grouped by event kind
+- `{ createdAt: 1 }` — time-range scans
+
+Defined directly in the schemas, e.g.:
 
 ```js
 sessionSchema.index({ status: 1, createdAt: 1 });
+sessionSchema.index({ createdAt: 1 });
+auditEventSchema.index({ sessionId: 1, createdAt: 1 });
 ```
+
+> Adding these triggers an Atlas index build — trivial at demo scale.
 
 ---
 
@@ -335,7 +457,8 @@ flowchart TD
   "_id": "...",
   "sessionId": "9d7c...",
   "name": "Ravi Kumar",
-  "aadhaarNumber": "123456789012",
+  "aadhaarHash": "3b8f2c...e91a",
+  "aadhaarMasked": "XXXX XXXX 9012",
   "aadhaarImagePath": "backend/uploads/aadhaar/aadhaar-...jpg",
   "aadhaarFacePath": "backend/uploads/aadhaar/face_9d7c....jpg",
   "selfieImagePath": "backend/uploads/selfies/selfie_9d7c....jpg",
@@ -343,8 +466,25 @@ flowchart TD
   "challenge": "TURN_HEAD_LEFT",
   "attempts": 1,
   "status": "FACE_VERIFIED",
+  "ipAddress": "203.0.113.7",
+  "userAgent": "Mozilla/5.0 ...",
   "createdAt": "2026-07-13T10:00:00.000Z",
+  "updatedAt": "2026-07-13T10:00:20.000Z",
   "completedAt": null
+}
+```
+
+### AuditEvent Document Snapshot
+
+```json
+{
+  "_id": "...",
+  "sessionId": "9d7c...",
+  "type": "FACE_COMPARED",
+  "message": "Face comparison completed.",
+  "meta": { "score": 86, "threshold": 80 },
+  "createdAt": "2026-07-13T10:00:15.000Z",
+  "updatedAt": "2026-07-13T10:00:15.000Z"
 }
 ```
 

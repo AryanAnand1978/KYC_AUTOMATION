@@ -1,9 +1,30 @@
 import React from 'react';
-import { BrowserRouter, Routes, Route, Link } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Link, Navigate } from 'react-router-dom';
 import UploadPage from './pages/UploadPage';
 import VerificationPage from './pages/VerificationPage';
 import ResultPage from './pages/ResultPage';
-import { ShieldCheck } from 'lucide-react';
+import AdminLoginPage from './pages/admin/AdminLoginPage';
+import AdminDashboardPage from './pages/admin/AdminDashboardPage';
+import VerificationDetailPage from './pages/admin/VerificationDetailPage';
+import { getAdminToken } from './api';
+import { ShieldCheck, Home } from 'lucide-react';
+
+// Route guard: admin pages require a stored shared-key token.
+const RequireAdmin = ({ children }) => {
+  return getAdminToken() ? children : <Navigate to="/admin" replace />;
+};
+
+const NotFound = () => (
+  <div className="w-full max-w-md mx-auto text-center glass-card p-8 animate-fade-in">
+    <div className="text-6xl font-extrabold bg-gradient-to-r from-brand-cyan to-brand-blue bg-clip-text text-transparent mb-2">404</div>
+    <h2 className="text-xl font-bold text-white mb-2">Page Not Found</h2>
+    <p className="text-slate-400 text-sm mb-6">The route you requested does not exist on this node.</p>
+    <Link to="/" className="btn-secondary w-full flex items-center justify-center gap-2">
+      <Home className="w-4 h-4" />
+      <span>Return to Portal</span>
+    </Link>
+  </div>
+);
 
 function App() {
   return (
@@ -34,6 +55,14 @@ function App() {
             <Route path="/" element={<UploadPage />} />
             <Route path="/verify/:sessionId" element={<VerificationPage />} />
             <Route path="/result/:sessionId" element={<ResultPage />} />
+
+            {/* Admin console */}
+            <Route path="/admin" element={<AdminLoginPage />} />
+            <Route path="/admin/dashboard" element={<RequireAdmin><AdminDashboardPage /></RequireAdmin>} />
+            <Route path="/admin/verifications/:sessionId" element={<RequireAdmin><VerificationDetailPage /></RequireAdmin>} />
+
+            {/* Catch-all 404 */}
+            <Route path="*" element={<NotFound />} />
           </Routes>
         </main>
 

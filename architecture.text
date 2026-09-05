@@ -1,0 +1,465 @@
+AUTOMATED VIDEO KYC VERIFICATION SYSTEM
+FULL-STACK ARCHITECTURE DOCUMENT
+
+======================================================================
+1. SYSTEM PURPOSE
+======================================================================
+
+The Automated Video KYC Verification System verifies an applicant remotely
+using an Aadhaar document, OCR, face comparison, and a browser-based liveness
+challenge. The project is a full-stack prototype that demonstrates how a
+React frontend communicates with an Express REST API, how AI services process
+identity media, and how MongoDB stores the verification lifecycle.
+
+The system has four main layers:
+
+    React Frontend
+          |
+          | Axios over HTTP/JSON and multipart form data
+          v
+    Express REST API
+          |
+          +------------------+------------------+
+          |                  |                  |
+          v                  v                  v
+      MongoDB          OCR Services       Face Services
+      Mongoose         Gemini/Vision       Face++/Jimp
+          |
+          v
+    Audit events and session history
+
+======================================================================
+2. FRONTEND ARCHITECTURE
+======================================================================
+
+The frontend is located in frontend/ and is built with React, Vite, React
+Router, Axios, Tailwind CSS, Lucide React, React Webcam, MediaPipe, and
+Recharts. React manages page state, loading states, camera interaction,
+challenge progress, errors, and navigation.
+
+2.1 Application shell
+---------------------
+
+File: frontend/src/App.jsx
+
+App.jsx creates the BrowserRouter, common header, main content area, footer,
+and route definitions. It also protects admin pages with RequireAdmin. The
+route guard checks whether the shared admin token exists in browser
+localStorage before rendering the dashboard.
+
+2.2 Frontend routes
+-------------------
+
+Route: /
+Component: UploadPage
+Purpose: Customer entry point. The applicant selects or drops an Aadhaar
+image. The page validates JPG, JPEG, and PNG format and a 5 MB maximum size.
+It submits multipart data, displays processing stages, and shows the returned
+masked identity and verification link.
+
+Route: /verify/:sessionId
+Component: VerificationPage
+Purpose: Customer verification screen. It loads the session, opens the
+webcam, captures a selfie, sends it for face matching, initializes the
+liveness model, evaluates the assigned gesture, and submits the result.
+
+Route: /result/:sessionId
+Component: ResultPage
+Purpose: Displays the final status, masked Aadhaar value, face score, selected
+challenge, attempts, timestamp, and failure or success explanation.
+
+Route: /admin
+Component: AdminLoginPage
+Purpose: Accepts the shared admin key. The key is stored temporarily in
+localStorage, sent to the backend for validation, and removed when invalid.
+
+Route: /admin/dashboard
+Component: AdminDashboardPage
+Purpose: Displays operational statistics, charts, filters, pagination, and the
+verification-record table. It calls admin statistics and list endpoints.
+
+Route: /admin/verifications/:sessionId
+Component: VerificationDetailPage
+Purpose: Displays one verification record and its complete chronological audit
+timeline. Each event is rendered with its type, message, timestamp, and meta
+values.
+
+2.3 Frontend API clients
+------------------------
+
+File: frontend/src/api.js
+
+API_BASE_URL is formed from VITE_API_URL. If the variable is absent, the
+frontend uses http://localhost:5000/api.
+
+The public Axios client calls customer endpoints. The admin Axios client uses
+/api/admin as its base URL and attaches:
+
+    Authorization: Bearer <stored-admin-token>
+
+through a request interceptor. A 401 response clears the token and redirects
+the operator to the admin login page.
+
+2.4 Browser AI processing
+-------------------------
+
+MediaPipe scripts are loaded in frontend/index.html from a CDN:
+
+- camera_utils: provides the camera frame loop.
+- hands: detects hand landmarks for SHOW_LEFT_HAND and SHOW_RIGHT_HAND.
+- face_mesh: detects facial landmarks for TURN_HEAD_LEFT and
+  TURN_HEAD_RIGHT.
+
+The verification page sends webcam frames to the selected model. A hand
+challenge succeeds after the expected hand is detected for six consecutive
+frames. A head challenge uses nose and cheek landmark positions to calculate a
+horizontal rotation ratio. A 20-second timer limits each challenge attempt.
+The browser submits only the final success or failure result, along with an
+optional proof frame.
+
+======================================================================
+3. BACKEND ARCHITECTURE
+======================================================================
+
+The backend is located in backend/ and uses Node.js, Express, Mongoose,
+Multer, Axios, Jimp, FormData, dotenv, CORS, and express-rate-limit.
+
+3.1 Server entry point
+----------------------
+
+File: backend/server.js
+
+server.js loads environment variables, creates the Express application,
+connects to MongoDB, enables CORS, parses JSON and URL-encoded data, serves
+upload paths, mounts routes, exposes health status, creates upload folders,
+and starts the HTTP server.
+
+It also runs a background job every two minutes. The job finds PENDING or
+FACE_VERIFIED sessions older than ten minutes, marks them EXPIRED, records the
+expiry event, and removes temporary files.
+
+3.2 Routing layer
+-----------------
+
+backend/routes/kycRoutes.js handles public customer requests. It configures
+Multer disk storage, accepts only JPG/JPEG/PNG images, limits uploads to 5 MB,
+and applies request rate limits.
+
+backend/routes/adminRoutes.js handles operator requests. It applies a rate
+limiter and the requireAdmin middleware before every admin route.
+
+3.3 Controller layer
+--------------------
+
+backend/controllers/kycController.js contains the customer business flow:
+masking and hashing Aadhaar, creating sessions, checking expiry, verifying
+faces, verifying challenges, returning results, and cleaning media.
+
+backend/controllers/adminController.js contains admin data access:
+verification listing, filters, pagination, record details, audit timeline
+retrieval, and MongoDB-based dashboard statistics.
+
+3.4 Data layer
+--------------
+
+backend/config/db.js connects Mongoose to MongoDB. The default local database
+is kyc-verification.
+
+backend/models/Session.js defines the current verification document. It stores
+sessionId, OCR name, masked/hash identity, media paths, face score, challenge,
+attempts, status, request metadata, and timestamps.
+
+backend/models/AuditEvent.js defines the append-only lifecycle record. It
+stores sessionId, event type, message, flexible meta data, and timestamps.
+
+backend/services/auditService.js inserts audit events using logEvent(). Audit
+failures are caught so a failed audit write does not interrupt the main
+verification response.
+
+======================================================================
+4. ALL REST API ENDPOINTS
+======================================================================
+
+4.1 Public customer APIs
+------------------------
+
+POST /api/upload-aadhaar
+
+Purpose: Creates a verification session from an Aadhaar image.
+Request: multipart/form-data with field aadhaar.
+Processing: Multer saves the image, OCR extracts identity fields, face
+ detection crops the document face, and MongoDB stores a PENDING session.
+Success response: sessionId, verificationLink, extracted name, and masked
+ Aadhaar number.
+Possible errors: missing file, invalid type, file larger than 5 MB, OCR
+ failure, face detection failure, or database failure.
+
+GET /api/session/:sessionId
+
+Purpose: Loads the active session for the verification page.
+Processing: Finds the session, checks the ten-minute validity window, and
+returns safe fields such as status, challenge, attempts, and createdAt.
+Expiry behavior: An active old session is saved as EXPIRED, audited, and
+cleaned up.
+Possible errors: session not found, expired session, or server failure.
+
+POST /api/verify-face
+
+Purpose: Compares the live webcam selfie with the Aadhaar face.
+Request JSON:
+
+    {
+      "sessionId": "uuid",
+      "selfie": "data:image/jpeg;base64,..."
+    }
+
+Processing: Decodes the selfie, stores it temporarily, calls the face service,
+and saves faceMatchScore. A score of 80 or higher changes the session to
+FACE_VERIFIED and assigns a random challenge. A lower score changes it to
+FAILED and starts cleanup.
+
+POST /api/verify-challenge
+
+Purpose: Records the liveness challenge result.
+Request JSON contains sessionId, optional proof image, and success boolean.
+Processing: Increments attempts and records CHALLENGE_ATTEMPTED. Success
+changes the session to VERIFIED. The first failure assigns a new challenge.
+The second failure changes the session to FAILED. Terminal states trigger
+media cleanup and audit events.
+
+GET /api/result/:sessionId
+
+Purpose: Returns the current or final result.
+Response fields: sessionId, name, masked Aadhaar, status, faceMatchScore,
+challenge, attempts, createdAt, and completedAt.
+
+GET /health
+
+Purpose: Checks whether the backend process is running.
+Response: { status: "OK", message: "KYC backend is running." }
+
+4.2 Protected admin APIs
+------------------------
+
+All admin requests require:
+
+    Authorization: Bearer <ADMIN_TOKEN>
+
+GET /api/admin/verify
+
+Purpose: Validates the submitted shared admin token. It returns { ok: true }
+when authentication succeeds.
+
+GET /api/admin/verifications
+
+Purpose: Returns a paginated verification list.
+Query parameters: page, limit, status, q, from, to, and sort.
+The q parameter searches name or masked Aadhaar. sort supports newest, oldest,
+and score. The response contains items, total, page, pages, and limit.
+Sensitive media paths and the Aadhaar hash are excluded from this list.
+
+GET /api/admin/verifications/:sessionId
+
+Purpose: Returns one verification record plus its audit timeline.
+Response: verification summary and events sorted by createdAt. The detail
+view includes operational metadata such as IP address, user-agent, update
+time, and the secured Aadhaar hash.
+
+GET /api/admin/stats
+
+Purpose: Provides dashboard analytics generated by MongoDB aggregation.
+Returned analytics include totals by status, today's count, distinct
+applicants, pass rate, average face score, daily activity for the last 30
+days, and liveness outcomes grouped by challenge.
+
+======================================================================
+5. AI MODELS AND EXTERNAL SERVICES
+======================================================================
+
+5.1 Gemini 2.5 Flash
+--------------------
+
+File: backend/services/ocrService.js
+
+When GEMINI_API_KEY is configured and is not mock, the backend sends the
+Aadhaar image as base64 inline data to the Gemini 2.5 Flash generateContent
+API. The prompt requests a JSON object containing the full name and 12-digit
+Aadhaar number. The service parses the response and returns normalized fields.
+Gemini is used for multimodal document understanding and direct OCR-style
+field extraction.
+
+5.2 Google Cloud Vision OCR
+---------------------------
+
+If Gemini is unavailable and GOOGLE_VISION_API_KEY is configured, the backend
+calls Google Vision image annotation with TEXT_DETECTION. The service parses
+text annotations, detects common Aadhaar number formats, and applies name
+extraction heuristics around DOB or date-of-birth lines. It returns name,
+Aadhaar number, and raw OCR text.
+
+5.3 Face++ detection API
+------------------------
+
+File: backend/services/faceService.js
+
+Face++ Detect receives the uploaded Aadhaar image and returns face rectangle
+coordinates. Jimp then crops the detected region with padding and saves the
+Aadhaar face image.
+
+Face++ Compare receives the cropped Aadhaar face and temporary selfie. It
+returns a confidence value from 0 to 100. The controller rounds and stores the
+value, using 80 as the pass threshold.
+
+5.4 MediaPipe Hands
+-------------------
+
+MediaPipe Hands runs in the browser, not as a backend REST service. It detects
+hand landmarks and handedness in live camera frames. The frontend uses it to
+verify left-hand and right-hand challenges without uploading every frame.
+
+5.5 MediaPipe Face Mesh
+-----------------------
+
+MediaPipe Face Mesh also runs in the browser. It detects facial landmarks. The
+frontend compares nose and cheek landmark positions to determine whether the
+applicant turned the head in the requested direction.
+
+5.6 Mock mode
+-------------
+
+When MOCK_MODE=true, or required external credentials are unavailable, the
+backend uses deterministic demo behavior. OCR returns sample identity data.
+Jimp performs a center crop for a simulated face. Face comparison returns a
+successful score, with a controlled failure path available for testing. This
+allows the project to be demonstrated without paid or external API access.
+
+======================================================================
+6. COMPLETE REQUEST LIFECYCLE
+======================================================================
+
+    Customer selects Aadhaar image
+                |
+                v
+    UploadPage validates and sends multipart request
+                |
+                v
+    Express + Multer receives file
+                |
+                v
+    OCR extracts name and Aadhaar number
+                |
+                v
+    Face service detects and crops document face
+                |
+                v
+    Session(PENDING) and audit events are saved
+                |
+                v
+    VerificationPage loads session and webcam
+                |
+                v
+    Selfie sent to POST /api/verify-face
+          /                       \
+   score >= 80                 score < 80
+       /                           \
+FACE_VERIFIED                 FAILED + cleanup
+       |
+       v
+MediaPipe checks assigned hand/head action
+       |
+       v
+POST /api/verify-challenge
+          /                       \
+     success                  failure
+        /                     /       \
+VERIFIED + cleanup       retry     FAILED
+
+At any active stage, the ten-minute limit can produce EXPIRED. The result page
+then reads the stored session and displays the final status.
+
+======================================================================
+7. SECURITY AND OPERATIONAL CONTROLS
+======================================================================
+
+- Aadhaar values are masked for display and stored as salted SHA-256 hashes.
+- Raw biometric images are temporary and cleaned at terminal states.
+- Public uploads accept only images and are limited to 5 MB.
+- Upload and verification endpoints use rate limiting.
+- Admin endpoints use rate limiting and Bearer-token middleware.
+- Admin token comparison uses crypto.timingSafeEqual where lengths match.
+- Database responses use field selection to limit sensitive data exposure.
+- Invalid workflow states are rejected by the controllers.
+- CORS and request body limits are configured in server.js.
+- The prototype uses a shared admin token; production should use individual
+  accounts, roles, ownership checks, and stronger session management.
+
+======================================================================
+8. RUNTIME CONFIGURATION
+======================================================================
+
+Backend environment variables:
+
+    PORT
+    MONGODB_URI
+    MOCK_MODE
+    GEMINI_API_KEY
+    GOOGLE_VISION_API_KEY
+    FACEPLUSPLUS_API_KEY
+    FACEPLUSPLUS_API_SECRET
+    ADMIN_TOKEN
+    AADHAAR_HASH_PEPPER
+
+Frontend environment variable:
+
+    VITE_API_URL
+
+If VITE_API_URL is absent, the frontend calls http://localhost:5000/api.
+MongoDB must be available locally or through MONGODB_URI. Normal liveness
+operation requires browser camera permission and access to MediaPipe CDN
+scripts.
+
+======================================================================
+9. PROJECT LIMITATIONS
+======================================================================
+
+The system is an academic and demonstration prototype. It does not validate
+an Aadhaar number against a government database, replace official KYC
+providers, or provide complete production fraud detection. The current admin
+access uses one shared key, and customer sessions are not linked to registered
+accounts. External AI service availability and camera permissions affect the
+runtime flow. A production deployment would add account identity, consent and
+retention controls, cloud object storage, stronger authentication, monitoring,
+transactional event delivery, and compliance review.
+
+======================================================================
+10. IMPORTANT SOURCE FILES
+======================================================================
+
+Frontend:
+
+- frontend/src/App.jsx
+- frontend/src/api.js
+- frontend/src/pages/UploadPage.jsx
+- frontend/src/pages/VerificationPage.jsx
+- frontend/src/pages/ResultPage.jsx
+- frontend/src/pages/admin/AdminLoginPage.jsx
+- frontend/src/pages/admin/AdminDashboardPage.jsx
+- frontend/src/pages/admin/VerificationDetailPage.jsx
+- frontend/index.html
+
+Backend:
+
+- backend/server.js
+- backend/config/db.js
+- backend/routes/kycRoutes.js
+- backend/routes/adminRoutes.js
+- backend/controllers/kycController.js
+- backend/controllers/adminController.js
+- backend/middleware/adminAuth.js
+- backend/models/Session.js
+- backend/models/AuditEvent.js
+- backend/services/ocrService.js
+- backend/services/faceService.js
+- backend/services/auditService.js
+
+END OF SYSTEM ARCHITECTURE DOCUMENT

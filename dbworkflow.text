@@ -1,0 +1,432 @@
+KYC VERIFICATION PROJECT
+DATABASE WORKFLOW AND SCHEMA ARCHITECTURE
+
+Technology: MongoDB with Mongoose ODM
+Backend: Node.js and Express.js
+
+======================================================================
+1. PROJECT DATABASE OVERVIEW
+======================================================================
+
+This project is an automated KYC verification system. It verifies an
+applicant through an Aadhaar image, OCR identity extraction, face comparison
+with a live selfie, and a browser-based liveness challenge.
+
+MongoDB stores the persistent part of each verification. The database keeps
+the current session state, safe identity metadata, face-match result, liveness
+details, timestamps, request information, and an audit history. Temporary
+images are stored on the backend file system and are removed when a session
+finishes or expires.
+
+The application uses two main MongoDB collections:
+
+1. sessions: one document for each verification journey.
+2. auditevents: separate lifecycle records connected to a sessionId.
+
+Mongoose is the ODM layer. It defines schemas, validates values, creates
+indexes, provides model methods, and exposes operations such as findOne(),
+find(), aggregate(), and save().
+
+======================================================================
+2. DATABASE CONNECTION AND STARTUP
+======================================================================
+
+The connection is configured in backend/config/db.js. During startup,
+server.js loads environment variables and calls connectDB(). Mongoose uses
+MONGODB_URI when it is configured. Otherwise, local development uses:
+
+    mongodb://127.0.0.1:27017/kyc-verification
+
+The startup sequence is:
+
+    Load environment variables
+            |
+            v
+    Create Express application
+            |
+            v
+    Connect to MongoDB through Mongoose
+            |
+            v
+    Register middleware and routes
+            |
+            v
+    Start the expiry cleanup job
+            |
+            v
+    Start the HTTP server
+
+If the database connection fails, the error is logged and the process exits.
+This prevents the backend from accepting requests without persistence.
+
+======================================================================
+3. CURRENT DATABASE SCHEMA
+======================================================================
+
+3.1 sessions collection
+-----------------------
+
+One sessions document represents one verification attempt. The Session schema
+contains these fields:
+
+- sessionId: required unique public identifier generated with crypto.randomUUID().
+- name: name extracted from the Aadhaar image by OCR.
+- aadhaarHash: salted SHA-256 hash of the digits-only Aadhaar number.
+- aadhaarMasked: safe display value such as XXXX XXXX 9012.
+- aadhaarImagePath: temporary uploaded document path.
+- aadhaarFacePath: temporary cropped face path.
+- selfieImagePath: temporary selfie path.
+- faceMatchScore: rounded face-comparison confidence score.
+- challenge: current hand or head movement challenge.
+- attempts: number of challenge attempts.
+- status: current state of the verification.
+- ipAddress: requester IP captured at upload.
+- userAgent: browser information captured at upload.
+- createdAt and updatedAt: automatically generated timestamps.
+- completedAt: set when the session reaches a terminal state.
+
+Allowed status values are PENDING, FACE_VERIFIED, VERIFIED, FAILED, and
+EXPIRED. Allowed challenges are SHOW_LEFT_HAND, SHOW_RIGHT_HAND,
+TURN_HEAD_LEFT, TURN_HEAD_RIGHT, or an empty value.
+
+3.2 auditevents collection
+---------------------------
+
+Each important activity creates a separate AuditEvent document. Its fields are:
+
+- sessionId: identifies the verification session.
+- type: controlled event name.
+- message: short readable description.
+- meta: structured event-specific data such as score, threshold, challenge,
+  attempt number, or success flag.
+- createdAt and updatedAt: event timestamps.
+
+Event types include SESSION_CREATED, OCR_EXTRACTED, FACE_CROPPED,
+FACE_COMPARED, FACE_PASSED, FACE_FAILED, CHALLENGE_ASSIGNED,
+CHALLENGE_ATTEMPTED, CHALLENGE_PASSED, CHALLENGE_FAILED,
+SESSION_VERIFIED, SESSION_FAILED, SESSION_EXPIRED, and MEDIA_CLEANED.
+
+The audit trail is separate from the session document so the current session
+stays compact while the event history can grow independently. It also allows
+the admin dashboard to retrieve a chronological timeline for one session.
+
+======================================================================
+4. PRIVACY AND FILE STORAGE
+======================================================================
+
+The raw Aadhaar number is never persisted. After OCR, the controller performs
+two transformations:
+
+    1234 5678 9012 -> XXXX XXXX 9012
+
+The masked value is stored in aadhaarMasked and returned to the frontend. A
+salted, non-reversible SHA-256 digest is stored in aadhaarHash:
+
+    SHA-256(PEPPER + ':' + digits-only Aadhaar)
+
+The pepper is read from AADHAAR_HASH_PEPPER. The hash supports operations such
+as distinct-applicant counting without storing recoverable Aadhaar plaintext.
+
+Aadhaar images, cropped faces, selfies, and optional challenge frames are
+stored temporarily under backend/uploads. They are deleted after VERIFIED,
+FAILED, or EXPIRED status. The deletion is recorded using MEDIA_CLEANED.
+Normal API responses return masked identity information and do not expose raw
+identity data, disk paths, or the Aadhaar hash.
+
+======================================================================
+5. END-TO-END DATABASE WORKFLOW
+======================================================================
+
+5.1 Upload and session creation
+-------------------------------
+
+Endpoint: POST /api/upload-aadhaar
+
+1. The customer uploads an Aadhaar JPG, JPEG, or PNG image.
+2. Multer validates the file and stores it temporarily. The upload limit is
+   5 MB.
+3. OCR extracts the applicant name and Aadhaar number.
+4. The face service detects and crops the Aadhaar face.
+5. The controller creates aadhaarMasked and aadhaarHash.
+6. A Session object is created with a new sessionId and status PENDING.
+7. IP address and user-agent are captured.
+8. session.save() inserts the document into sessions.
+9. SESSION_CREATED, OCR_EXTRACTED, and FACE_CROPPED are inserted into
+   auditevents.
+10. The API returns sessionId, a verification link, name, and masked Aadhaar.
+
+If OCR or face detection fails, temporary files are removed and the session
+document is not created.
+
+5.2 Session state retrieval
+---------------------------
+
+Endpoint: GET /api/session/:sessionId
+
+The backend uses Session.findOne({ sessionId }). If no document is found, it
+returns 404. The isExpired() model method checks whether the session is older
+than ten minutes. An active expired session is updated to EXPIRED,
+completedAt is assigned, an expiry event is inserted, and media cleanup runs.
+The response contains only the safe current session snapshot.
+
+5.3 Face verification
+---------------------
+
+Endpoint: POST /api/verify-face
+
+1. Find the session by sessionId.
+2. Reject an unknown session or an already invalid status.
+3. Check the ten-minute expiry window.
+4. Accept this operation only when status is PENDING.
+5. Decode the base64 selfie and save it temporarily.
+6. Compare the selfie with aadhaarFacePath.
+7. Store the rounded faceMatchScore and insert FACE_COMPARED.
+
+When the score is at least 80, the controller selects a random challenge,
+sets status to FACE_VERIFIED, saves the session, and logs FACE_PASSED and
+CHALLENGE_ASSIGNED.
+
+When the score is below 80, it sets status to FAILED, assigns completedAt,
+saves the session, logs FACE_FAILED and SESSION_FAILED, and removes media.
+
+5.4 Liveness challenge verification
+------------------------------------
+
+Endpoint: POST /api/verify-challenge
+
+This operation is accepted only when status is FACE_VERIFIED. The controller
+records the current challenge, increments attempts, and inserts
+CHALLENGE_ATTEMPTED.
+
+If success is true, status becomes VERIFIED, completedAt is assigned, the
+session is saved, CHALLENGE_PASSED and SESSION_VERIFIED are logged, and media
+is removed.
+
+If the first attempt fails, a different challenge is assigned, status remains
+FACE_VERIFIED, the session is saved, and the failure plus new assignment are
+logged. If the second attempt fails, status becomes FAILED, completedAt is
+assigned, failure events are logged, and media is removed.
+
+5.5 Result retrieval
+--------------------
+
+Endpoint: GET /api/result/:sessionId
+
+The backend retrieves the session and returns the final or current summary:
+sessionId, name, masked Aadhaar, status, faceMatchScore, challenge, attempts,
+createdAt, and completedAt.
+
+======================================================================
+6. SESSION STATE ARCHITECTURE
+======================================================================
+
+The Session document follows this lifecycle:
+
+    PENDING
+       |
+       | face score >= 80
+       v
+    FACE_VERIFIED
+       |
+       | challenge succeeds
+       v
+    VERIFIED
+
+Other outcomes are:
+
+    PENDING -------- face score < 80 --------> FAILED
+    FACE_VERIFIED -- second challenge failure -> FAILED
+    PENDING or FACE_VERIFIED -- ten minutes --> EXPIRED
+
+VERIFIED, FAILED, and EXPIRED are terminal states. The controllers check the
+current state before processing each request. This prevents a face operation
+from being submitted after face verification and prevents challenge processing
+before the face stage has passed.
+
+======================================================================
+7. USER-TYPE AND SCHEMA ARCHITECTURE
+======================================================================
+
+7.1 Customer or applicant
+--------------------------
+
+In the current prototype, customers do not register or log in. A customer is
+represented by a unique verification session. The session contains the
+customer's masked identity, secured Aadhaar hash, verification result,
+temporary file references, and workflow timestamps.
+
+Current customer flow:
+
+    Customer -> upload Aadhaar -> Session(PENDING)
+             -> selfie and face check -> FACE_VERIFIED or FAILED
+             -> liveness challenge -> VERIFIED, FAILED, or EXPIRED
+
+7.2 Admin or operator
+---------------------
+
+The current project has no Admin collection. Admin routes are protected by a
+shared ADMIN_TOKEN environment variable supplied as Authorization: Bearer
+token. The requireAdmin middleware validates this token before the dashboard
+routes execute. The admin reads sessions, audit timelines, and statistics but
+does not participate in the customer verification flow.
+
+7.3 System services
+-------------------
+
+Automated services act as system-level actors:
+
+- OCR service extracts identity fields.
+- Face service detects, crops, and compares faces.
+- Audit service writes lifecycle events.
+- Expiry job marks stale sessions and triggers cleanup.
+
+These services update the session through backend controllers and are recorded
+through audit events where applicable.
+
+7.4 Recommended production extension
+-------------------------------------
+
+For individual accounts, a production version can add the following
+collections:
+
+User:
+
+    userId, name, email, phone, passwordHash, role, accountStatus,
+    createdAt, updatedAt
+
+Admin:
+
+    adminId, name, email, passwordHash, role, permissions, accountStatus,
+    lastLoginAt, createdAt, updatedAt
+
+VerificationSession can then receive an optional userId, and AuditEvent can
+receive actorId and actorRole. The resulting operational relationships are:
+
+    User 1 -------- N VerificationSession
+    VerificationSession 1 -------- N AuditEvent
+    Admin 1 -------- N AuditEvent
+
+The current implementation uses sessionId to connect audit events. A
+production design would additionally record the authenticated customer,
+admin, or SYSTEM actor for ownership checks and individual accountability.
+
+7.5 Role permissions
+--------------------
+
+Customer permissions include creating a session, submitting selfie and
+challenge data, reading the customer's own result, and viewing verification
+status.
+
+Admin permissions include listing records, filtering and paginating sessions,
+viewing audit timelines, and reading aggregate dashboard statistics.
+
+System permissions include running OCR and face services, changing workflow
+states through backend rules, expiring stale sessions, and deleting temporary
+media.
+
+======================================================================
+8. ADMIN DASHBOARD DATABASE WORKFLOW
+======================================================================
+
+All /api/admin routes use rate limiting and the admin bearer-token middleware.
+
+GET /api/admin/verifications retrieves a paginated session list. It supports
+status, text, date-range, and sort filters. The controller uses projection so
+the list does not return disk paths or the Aadhaar hash.
+
+GET /api/admin/verifications/:sessionId retrieves one session and its complete
+AuditEvent timeline, sorted in chronological order.
+
+GET /api/admin/stats uses MongoDB aggregation pipelines to calculate status
+counts, today's sessions, distinct applicants, average face score, pass rate,
+challenge success rate, daily verification totals, and challenge outcomes.
+
+======================================================================
+9. EXPIRY, CLEANUP, AND ERROR HANDLING
+======================================================================
+
+Expiry is enforced in two ways:
+
+1. Request-time checks in session, face, and challenge controllers.
+2. A background job in server.js that runs approximately every two minutes.
+
+The background job searches for PENDING or FACE_VERIFIED sessions older than
+ten minutes. Each result is changed to EXPIRED, completedAt is assigned, an
+expiry event is logged, and all temporary media is deleted.
+
+The backend returns 404 for unknown sessions, 400 for invalid workflow
+actions, and 500 for unexpected database or service errors. OCR and face
+service failures trigger temporary-file cleanup where possible. Audit logging
+is handled by auditService.logEvent(), which catches its own errors so an
+audit insertion failure does not stop the main verification request.
+
+======================================================================
+10. INDEXES AND DATA ACCESS PATTERNS
+======================================================================
+
+The Session schema defines indexes on sessionId, aadhaarHash, createdAt, and
+the compound pair status plus createdAt. These support direct session lookup,
+hash-based analytics, time-based reporting, and expiry scans.
+
+The AuditEvent schema defines indexes on sessionId plus createdAt, type, and
+createdAt. These support ordered timelines, event analytics, and time-range
+queries.
+
+Common data operations are:
+
+    Session.findOne({ sessionId })
+    Session.find(filter).sort(sort).skip(skip).limit(limit)
+    AuditEvent.find({ sessionId }).sort({ createdAt: 1, _id: 1 })
+
+The database therefore stores both the latest state and the chronological
+history needed to understand how that state was reached.
+
+======================================================================
+11. COMPLETE ARCHITECTURE SUMMARY
+======================================================================
+
+    Customer uploads document
+                |
+                v
+    OCR and face crop services
+                |
+                v
+    Create Session document: PENDING
+                |
+                v
+    Compare live selfie with document face
+          /                     \
+ score >= 80               score < 80
+        /                         \
+FACE_VERIFIED              FAILED + cleanup
+        |
+        v
+    Assign and verify liveness challenge
+          /                     \
+   success                 failure or timeout
+      /                      /             \
+ VERIFIED + cleanup   retry once      EXPIRED
+                         |
+                         v
+                  FAILED + cleanup
+
+At each important step, the session document is updated and a corresponding
+audit event is created. The customer receives a safe result, while the admin
+dashboard reads the persistent session data and audit history for monitoring.
+
+======================================================================
+12. SOURCE FILES
+======================================================================
+
+- backend/config/db.js: MongoDB connection.
+- backend/models/Session.js: session schema, method, and indexes.
+- backend/models/AuditEvent.js: audit schema, event types, and indexes.
+- backend/services/auditService.js: audit insertion helper.
+- backend/controllers/kycController.js: verification workflow and cleanup.
+- backend/controllers/adminController.js: admin queries and analytics.
+- backend/middleware/adminAuth.js: shared-token admin protection.
+- backend/routes/kycRoutes.js: public KYC endpoints and upload limits.
+- backend/routes/adminRoutes.js: protected admin endpoints.
+- backend/server.js: startup and background expiry job.
+
+END OF DATABASE WORKFLOW DOCUMENT

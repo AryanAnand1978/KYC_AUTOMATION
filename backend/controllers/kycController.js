@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const Session = require('../models/Session');
 const ocrService = require('../services/ocrService');
 const faceService = require('../services/faceService');
+const { logEvent } = require('../services/auditService');
 
 // Helper to mask Aadhaar number (e.g., "1234 5678 9012" -> "XXXX XXXX 9012")
 const maskAadhaar = (num) => {
@@ -12,6 +13,17 @@ const maskAadhaar = (num) => {
   if (cleaned.length < 4) return 'XXXX';
   const lastFour = cleaned.slice(-4);
   return `XXXX XXXX ${lastFour}`;
+};
+
+// Helper to hash Aadhaar number into a non-reversible, salted digest.
+// Stored instead of plaintext so distinct applicants can be counted for
+// analytics without the DB ever holding a recoverable Aadhaar number.
+const hashAadhaar = (num) => {
+  if (!num) return '';
+  const cleaned = num.replace(/\D/g, '');
+  if (!cleaned) return '';
+  const pepper = process.env.AADHAAR_HASH_PEPPER || '';
+  return crypto.createHash('sha256').update(`${pepper}:${cleaned}`).digest('hex');
 };
 
 // Helper to delete a file if it exists
@@ -36,6 +48,8 @@ const cleanupSessionMedia = async (session) => {
   // Also delete any potential challenge verification frame
   const challengeFramePath = path.join(__dirname, '..', 'uploads', 'selfies', `challenge_${session.sessionId}.jpg`);
   deleteFile(challengeFramePath);
+
+  await logEvent(session.sessionId, 'MEDIA_CLEANED', 'Biometric media files removed from disk.');
 };
 
 // 1. Upload Aadhaar & Create Session
@@ -76,23 +90,38 @@ const uploadAadhaar = async (req, res) => {
       });
     }
 
+    // Secure the extracted Aadhaar number: store a masked value for display
+    // and a salted, non-reversible hash for analytics — never the raw number.
+    const aadhaarMasked = maskAadhaar(ocrData.aadhaarNumber);
+    const aadhaarHash = hashAadhaar(ocrData.aadhaarNumber);
+
     // Create session in database
     const session = new Session({
       sessionId,
       name: ocrData.name,
-      aadhaarNumber: ocrData.aadhaarNumber,
+      aadhaarHash,
+      aadhaarMasked,
       aadhaarImagePath: originalImagePath,
       aadhaarFacePath: croppedFacePath,
       status: "PENDING",
-      createdAt: new Date()
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent') || ''
     });
 
     await session.save();
 
-    // Construct verification URL
-    // Use host header to dynamically point to the server or frontend.
-    const protocol = req.secure ? 'https' : 'http';
-    const host = req.get('host');
+    // Record the lifecycle so the verification is fully auditable.
+    await logEvent(sessionId, 'SESSION_CREATED', 'Verification session created from Aadhaar upload.', {
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent') || ''
+    });
+    await logEvent(sessionId, 'OCR_EXTRACTED', 'Identity fields extracted from Aadhaar via OCR.', {
+      name: session.name,
+      aadhaarMasked
+    });
+    await logEvent(sessionId, 'FACE_CROPPED', 'Face region detected and cropped from Aadhaar image.');
+
+    // Relative verification link; the frontend resolves it against its own origin.
     const verificationLink = `/verify/${sessionId}`;
 
     return res.status(201).json({
@@ -100,7 +129,7 @@ const uploadAadhaar = async (req, res) => {
       verificationLink,
       extractedData: {
         name: session.name,
-        aadhaarNumber: maskAadhaar(session.aadhaarNumber)
+        aadhaarNumber: session.aadhaarMasked
       }
     });
 
@@ -124,12 +153,14 @@ const getSession = async (req, res) => {
     if (session.isExpired()) {
       if (session.status !== 'EXPIRED' && session.status !== 'VERIFIED' && session.status !== 'FAILED') {
         session.status = 'EXPIRED';
+        session.completedAt = new Date();
         await session.save();
+        await logEvent(session.sessionId, 'SESSION_EXPIRED', 'Session expired after the 10-minute limit.');
         await cleanupSessionMedia(session);
       }
-      return res.status(400).json({ 
-        error: "Verification Session has expired", 
-        status: "EXPIRED" 
+      return res.status(400).json({
+        error: "Verification Session has expired",
+        status: "EXPIRED"
       });
     }
 
@@ -137,7 +168,7 @@ const getSession = async (req, res) => {
     return res.status(200).json({
       sessionId: session.sessionId,
       name: session.name,
-      aadhaarNumber: maskAadhaar(session.aadhaarNumber),
+      aadhaarNumber: session.aadhaarMasked,
       status: session.status,
       challenge: session.challenge,
       attempts: session.attempts,
@@ -167,7 +198,9 @@ const verifyFace = async (req, res) => {
     // Check expiration
     if (session.isExpired()) {
       session.status = 'EXPIRED';
+      session.completedAt = new Date();
       await session.save();
+      await logEvent(session.sessionId, 'SESSION_EXPIRED', 'Session expired after the 10-minute limit.');
       await cleanupSessionMedia(session);
       return res.status(400).json({ error: "Session has expired.", status: "EXPIRED" });
     }
@@ -197,15 +230,26 @@ const verifyFace = async (req, res) => {
     }
 
     session.faceMatchScore = Math.round(confidence);
+    await logEvent(session.sessionId, 'FACE_COMPARED', 'Selfie compared against Aadhaar face.', {
+      score: session.faceMatchScore,
+      threshold: 80
+    });
 
     if (confidence >= 80) {
       // Choose random challenge
       const challenges = ["SHOW_LEFT_HAND", "SHOW_RIGHT_HAND", "TURN_HEAD_LEFT", "TURN_HEAD_RIGHT"];
       const randomChallenge = challenges[Math.floor(Math.random() * challenges.length)];
-      
+
       session.challenge = randomChallenge;
       session.status = "FACE_VERIFIED";
       await session.save();
+
+      await logEvent(session.sessionId, 'FACE_PASSED', 'Face match passed the 80% threshold.', {
+        score: session.faceMatchScore
+      });
+      await logEvent(session.sessionId, 'CHALLENGE_ASSIGNED', `Liveness challenge assigned: ${randomChallenge}.`, {
+        challenge: randomChallenge
+      });
 
       return res.status(200).json({
         message: "Face Verification Passed!",
@@ -216,7 +260,14 @@ const verifyFace = async (req, res) => {
     } else {
       // Fail Session & Cleanup files instantly
       session.status = "FAILED";
+      session.completedAt = new Date();
       await session.save();
+
+      await logEvent(session.sessionId, 'FACE_FAILED', 'Face match fell below the 80% threshold.', {
+        score: session.faceMatchScore
+      });
+      await logEvent(session.sessionId, 'SESSION_FAILED', 'Session failed at face verification.');
+
       await cleanupSessionMedia(session);
 
       return res.status(200).json({
@@ -249,7 +300,9 @@ const verifyChallenge = async (req, res) => {
     // Check expiration
     if (session.isExpired()) {
       session.status = 'EXPIRED';
+      session.completedAt = new Date();
       await session.save();
+      await logEvent(session.sessionId, 'SESSION_EXPIRED', 'Session expired after the 10-minute limit.');
       await cleanupSessionMedia(session);
       return res.status(400).json({ error: "Session has expired.", status: "EXPIRED" });
     }
@@ -270,14 +323,32 @@ const verifyChallenge = async (req, res) => {
       }
     }
 
+    // Capture which challenge was being attempted before any reassignment.
+    const attemptedChallenge = session.challenge;
+
     // Increment attempts count
     session.attempts += 1;
+
+    await logEvent(session.sessionId, 'CHALLENGE_ATTEMPTED', `Liveness challenge attempted: ${attemptedChallenge || 'unknown'}.`, {
+      challenge: attemptedChallenge,
+      attempt: session.attempts,
+      success: !!success
+    });
 
     if (success) {
       // Challenge passed! Session is now fully VERIFIED
       session.status = "VERIFIED";
       session.completedAt = new Date();
       await session.save();
+
+      await logEvent(session.sessionId, 'CHALLENGE_PASSED', 'Liveness challenge passed.', {
+        challenge: attemptedChallenge,
+        attempt: session.attempts
+      });
+      await logEvent(session.sessionId, 'SESSION_VERIFIED', 'Session fully verified.', {
+        attempts: session.attempts,
+        faceMatchScore: session.faceMatchScore
+      });
 
       // Clean up files now that the verification is completed!
       await cleanupSessionMedia(session);
@@ -295,10 +366,18 @@ const verifyChallenge = async (req, res) => {
         // Pick a different challenge if possible
         const remainingChallenges = challenges.filter(c => c !== session.challenge);
         const newChallenge = remainingChallenges[Math.floor(Math.random() * remainingChallenges.length)];
-        
+
         session.challenge = newChallenge;
         // Keep status as FACE_VERIFIED, wait for retry
         await session.save();
+
+        await logEvent(session.sessionId, 'CHALLENGE_FAILED', 'Liveness challenge failed; one attempt remaining.', {
+          challenge: attemptedChallenge,
+          attempt: session.attempts
+        });
+        await logEvent(session.sessionId, 'CHALLENGE_ASSIGNED', `New liveness challenge assigned for retry: ${newChallenge}.`, {
+          challenge: newChallenge
+        });
 
         return res.status(200).json({
           message: "Challenge failed. 1 attempt remaining.",
@@ -312,6 +391,14 @@ const verifyChallenge = async (req, res) => {
         session.status = "FAILED";
         session.completedAt = new Date();
         await session.save();
+
+        await logEvent(session.sessionId, 'CHALLENGE_FAILED', 'Liveness challenge failed; no attempts remaining.', {
+          challenge: attemptedChallenge,
+          attempt: session.attempts
+        });
+        await logEvent(session.sessionId, 'SESSION_FAILED', 'Session failed after exhausting challenge attempts.', {
+          attempts: session.attempts
+        });
 
         await cleanupSessionMedia(session);
 
@@ -343,7 +430,7 @@ const getResult = async (req, res) => {
     return res.status(200).json({
       sessionId: session.sessionId,
       name: session.name,
-      aadhaarNumber: maskAadhaar(session.aadhaarNumber),
+      aadhaarNumber: session.aadhaarMasked,
       status: session.status,
       faceMatchScore: session.faceMatchScore,
       challenge: session.challenge,
@@ -363,5 +450,6 @@ module.exports = {
   getSession,
   verifyFace,
   verifyChallenge,
-  getResult
+  getResult,
+  cleanupSessionMedia
 };
