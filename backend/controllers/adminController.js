@@ -28,10 +28,18 @@ const listVerifications = async (req, res) => {
       filter.status = req.query.status;
     }
 
-    // Free-text search on name or masked Aadhaar (e.g. last 4 digits).
+    // Free-text search on name or masked Aadhaar.
+    // Uses prefix-anchored regex (^...) by default to utilize B-tree indexes (IXSCAN).
+    // Supports ?unanchored=true or ?useUnanchoredRegex=true flag for benchmarking comparison.
     if (req.query.q && req.query.q.trim()) {
-      const rx = new RegExp(escapeRegex(req.query.q.trim()), 'i');
-      filter.$or = [{ name: rx }, { aadhaarMasked: rx }];
+      const escaped = escapeRegex(req.query.q.trim());
+      if (req.query.unanchored === 'true' || req.query.useUnanchoredRegex === 'true') {
+        const unanchoredRx = new RegExp(escaped, 'i');
+        filter.$or = [{ name: unanchoredRx }, { aadhaarMasked: unanchoredRx }];
+      } else {
+        const prefixRx = new RegExp(`^${escaped}`, 'i');
+        filter.$or = [{ name: prefixRx }, { aadhaarMasked: prefixRx }];
+      }
     }
 
     // Date-range filter on creation time.

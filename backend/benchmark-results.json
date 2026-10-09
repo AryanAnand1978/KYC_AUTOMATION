@@ -1,0 +1,60 @@
+{
+  "timestamp": "2026-10-09T18:49:23.445Z",
+  "totalDocuments": 10053,
+  "results": [
+    {
+      "query": "Status + Date Range + Sort",
+      "scenario": "WITHOUT Index",
+      "stage": "IXSCAN",
+      "totalKeysExamined": 3303,
+      "totalDocsExamined": 3303,
+      "nReturned": 674,
+      "executionTimeMillis": 7
+    },
+    {
+      "query": "Status + Date Range + Sort",
+      "scenario": "WITH Index {status:1, createdAt:1}",
+      "stage": "IXSCAN",
+      "totalKeysExamined": 674,
+      "totalDocsExamined": 674,
+      "nReturned": 674,
+      "executionTimeMillis": 2
+    },
+    {
+      "query": "Name Search (Regex)",
+      "scenario": "Unanchored (.*Aarav.*)",
+      "stage": "IXSCAN",
+      "totalKeysExamined": 10053,
+      "totalDocsExamined": 405,
+      "nReturned": 405,
+      "executionTimeMillis": 11
+    },
+    {
+      "query": "Name Search (Regex)",
+      "scenario": "Prefix (^Aarav) with {name:1}",
+      "stage": "IXSCAN",
+      "totalKeysExamined": 10053,
+      "totalDocsExamined": 405,
+      "nReturned": 405,
+      "executionTimeMillis": 9
+    },
+    {
+      "query": "Sort by faceMatchScore",
+      "scenario": "WITHOUT Index",
+      "stage": "COLLSCAN",
+      "totalKeysExamined": 0,
+      "totalDocsExamined": 10053,
+      "nReturned": 4554,
+      "executionTimeMillis": 13
+    },
+    {
+      "query": "Sort by faceMatchScore",
+      "scenario": "WITH Index {faceMatchScore:-1}",
+      "stage": "IXSCAN",
+      "totalKeysExamined": 4554,
+      "totalDocsExamined": 4554,
+      "nReturned": 4554,
+      "executionTimeMillis": 7
+    }
+  ]
+}

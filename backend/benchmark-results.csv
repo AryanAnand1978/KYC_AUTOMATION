@@ -1,0 +1,7 @@
+Query,Scenario,Stage,TotalKeysExamined,TotalDocsExamined,NReturned,ExecutionTimeMillis
+"Status + Date Range + Sort","WITHOUT Index",IXSCAN,3303,3303,674,7
+"Status + Date Range + Sort","WITH Index {status:1, createdAt:1}",IXSCAN,674,674,674,2
+"Name Search (Regex)","Unanchored (.*Aarav.*)",IXSCAN,10053,405,405,11
+"Name Search (Regex)","Prefix (^Aarav) with {name:1}",IXSCAN,10053,405,405,9
+"Sort by faceMatchScore","WITHOUT Index",COLLSCAN,0,10053,4554,13
+"Sort by faceMatchScore","WITH Index {faceMatchScore:-1}",IXSCAN,4554,4554,4554,7

@@ -63,6 +63,10 @@ const sessionSchema = new mongoose.Schema({
   },
   completedAt: {
     type: Date
+  },
+  seeded: {
+    type: Boolean,
+    default: false
   }
 }, {
   // Supplies createdAt + updatedAt automatically.
@@ -73,6 +77,10 @@ const sessionSchema = new mongoose.Schema({
 sessionSchema.index({ status: 1, createdAt: 1 });
 // Time-series analytics (verifications over time).
 sessionSchema.index({ createdAt: 1 });
+// Query optimization indexes for admin searching & score sorting
+sessionSchema.index({ faceMatchScore: -1 });
+sessionSchema.index({ name: 1 });
+sessionSchema.index({ aadhaarMasked: 1 });
 
 // Helper to check if session has expired (10 minutes)
 sessionSchema.methods.isExpired = function() {
