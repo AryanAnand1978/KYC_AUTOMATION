@@ -28,18 +28,14 @@ const listVerifications = async (req, res) => {
       filter.status = req.query.status;
     }
 
-    // Free-text search on name or masked Aadhaar.
-    // Uses prefix-anchored regex (^...) by default to utilize B-tree indexes (IXSCAN).
-    // Supports ?unanchored=true or ?useUnanchoredRegex=true flag for benchmarking comparison.
+    // Free-text search on nameLower or masked Aadhaar.
+    // Uses case-sensitive prefix regex on nameLower (no 'i' flag) to enable B-tree index range scans (IXSCAN).
     if (req.query.q && req.query.q.trim()) {
-      const escaped = escapeRegex(req.query.q.trim());
-      if (req.query.unanchored === 'true' || req.query.useUnanchoredRegex === 'true') {
-        const unanchoredRx = new RegExp(escaped, 'i');
-        filter.$or = [{ name: unanchoredRx }, { aadhaarMasked: unanchoredRx }];
-      } else {
-        const prefixRx = new RegExp(`^${escaped}`, 'i');
-        filter.$or = [{ name: prefixRx }, { aadhaarMasked: prefixRx }];
-      }
+      const q = req.query.q.trim();
+      const escaped = escapeRegex(q);
+      const prefixRx = new RegExp(`^${escaped}`);
+      const lowerPrefixRx = new RegExp(`^${escaped.toLowerCase()}`);
+      filter.$or = [{ nameLower: lowerPrefixRx }, { aadhaarMasked: prefixRx }];
     }
 
     // Date-range filter on creation time.

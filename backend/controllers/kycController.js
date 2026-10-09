@@ -120,6 +120,7 @@ const uploadAadhaar = async (req, res) => {
     const session = new Session({
       sessionId,
       name: ocrData.name,
+      nameLower: (ocrData.name || '').toLowerCase(),
       aadhaarHash,
       aadhaarMasked,
       aadhaarImagePath: originalImagePath,

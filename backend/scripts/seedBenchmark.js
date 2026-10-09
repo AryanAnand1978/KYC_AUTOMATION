@@ -97,6 +97,7 @@ async function run() {
       docs.push({
         sessionId: crypto.randomUUID(),
         name,
+        nameLower: name.toLowerCase(),
         aadhaarHash,
         aadhaarMasked,
         aadhaarImagePath: '',

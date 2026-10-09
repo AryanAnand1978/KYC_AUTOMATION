@@ -59,6 +59,27 @@ const hashAadhaar = (num) => {
     }
 
     console.log(`[Migrate PII] Migrated ${updated} document(s); plaintext Aadhaar numbers removed.`);
+
+    // Backfill nameLower efficiently using MongoDB updateMany pipeline
+    const updateResult = await collection.updateMany(
+      {
+        $or: [
+          { nameLower: { $exists: false } },
+          { nameLower: '' }
+        ],
+        name: { $exists: true, $ne: '' }
+      },
+      [
+        { $set: { nameLower: { $toLower: "$name" } } }
+      ]
+    );
+
+    console.log(`[Migrate PII] Populated nameLower on ${updateResult.modifiedCount} document(s).`);
+
+    // Ensure index on nameLower
+    await collection.createIndex({ nameLower: 1 });
+    console.log(`[Migrate PII] Index on nameLower: 1 confirmed.`);
+
     await mongoose.connection.close();
     process.exit(0);
   } catch (err) {

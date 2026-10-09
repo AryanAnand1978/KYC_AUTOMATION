@@ -10,6 +10,11 @@ const sessionSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  nameLower: {
+    type: String,
+    default: '',
+    index: true
+  },
   // PII is stored metadata-only. We keep a salted, non-reversible hash
   // (for distinct-applicant analytics) and a masked value (for display).
   // The raw Aadhaar number is never persisted.
@@ -80,7 +85,18 @@ sessionSchema.index({ createdAt: 1 });
 // Query optimization indexes for admin searching & score sorting
 sessionSchema.index({ faceMatchScore: -1 });
 sessionSchema.index({ name: 1 });
+sessionSchema.index({ nameLower: 1 });
 sessionSchema.index({ aadhaarMasked: 1 });
+
+// Automatically compute nameLower before saving
+sessionSchema.pre('save', function(next) {
+  if (this.name) {
+    this.nameLower = this.name.toLowerCase();
+  } else if (!this.nameLower) {
+    this.nameLower = '';
+  }
+  next();
+});
 
 // Helper to check if session has expired (10 minutes)
 sessionSchema.methods.isExpired = function() {
