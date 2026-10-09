@@ -1,22 +1,28 @@
-Size,Query,Scenario,Stage,TotalKeysExamined,TotalDocsExamined,NReturned,ExecutionTimeMillis
-10000,"Status + Date Range + Sort","No Index (Natural COLLSCAN)",COLLSCAN,0,10000,659,12
-10000,"Status + Date Range + Sort","Single-Field Index {createdAt: 1}",IXSCAN,3358,3358,659,10
-10000,"Status + Date Range + Sort","Compound Index {status: 1, createdAt: 1}",IXSCAN,659,659,659,2
-10000,"Name Search (Regex)","Unanchored (.*Aarav.*) [COLLSCAN]",COLLSCAN,0,10000,383,11
-10000,"Name Search (Regex)","Prefix (^aarav) with {nameLower: 1}",IXSCAN,384,383,383,1
-10000,"Sort by faceMatchScore","No Index (In-Memory Sort)",COLLSCAN,0,10000,4532,15
-10000,"Sort by faceMatchScore","WITH Index {faceMatchScore: -1}",IXSCAN,4532,4532,4532,9
-100000,"Status + Date Range + Sort","No Index (Natural COLLSCAN)",COLLSCAN,0,100000,6645,102
-100000,"Status + Date Range + Sort","Single-Field Index {createdAt: 1}",IXSCAN,33165,33165,6645,101
-100000,"Status + Date Range + Sort","Compound Index {status: 1, createdAt: 1}",IXSCAN,6645,6645,6645,25
-100000,"Name Search (Regex)","Unanchored (.*Aarav.*) [COLLSCAN]",COLLSCAN,0,100000,4041,97
-100000,"Name Search (Regex)","Prefix (^aarav) with {nameLower: 1}",IXSCAN,4042,4041,4041,9
-100000,"Sort by faceMatchScore","No Index (In-Memory Sort)",COLLSCAN,0,100000,45733,134
-100000,"Sort by faceMatchScore","WITH Index {faceMatchScore: -1}",IXSCAN,45733,45733,45733,85
-500000,"Status + Date Range + Sort","No Index (Natural COLLSCAN)",COLLSCAN,0,500000,33449,500
-500000,"Status + Date Range + Sort","Single-Field Index {createdAt: 1}",IXSCAN,166378,166378,33449,540
-500000,"Status + Date Range + Sort","Compound Index {status: 1, createdAt: 1}",IXSCAN,33449,33449,33449,87
-500000,"Name Search (Regex)","Unanchored (.*Aarav.*) [COLLSCAN]",COLLSCAN,0,500000,20132,433
-500000,"Name Search (Regex)","Prefix (^aarav) with {nameLower: 1}",IXSCAN,20133,20132,20132,49
-500000,"Sort by faceMatchScore","No Index (In-Memory Sort)",COLLSCAN,0,124314,0,146
-500000,"Sort by faceMatchScore","WITH Index {faceMatchScore: -1}",IXSCAN,227797,227797,227797,425
+Size,Query,Scenario,Stage,KeysExamined,DocsExamined,NReturned,MedianMs
+10000,"Name Search (Regex)","Unanchored (.*Aarav.*) [COLLSCAN]",COLLSCAN,0,10000,384,9
+10000,"Name Search (Regex)","Prefix (^aarav) with {nameLower: 1}",IXSCAN,385,384,384,1
+10000,"Sort by Score (limit 20)","Top-20 No Index (In-Memory Sort)",COLLSCAN,0,10000,20,10
+10000,"Sort by Score (limit 20)","Top-20 WITH Index {faceMatchScore: -1}",IXSCAN,20,20,20,0
+10000,"Sort by Score (Unlimited)","Unlimited No Index (In-Memory Sort)",COLLSCAN,0,10000,4603,13
+10000,"Sort by Score (Unlimited)","Unlimited WITH Index {faceMatchScore: -1}",IXSCAN,4603,4603,4603,6
+10000,"Status + Date Range + Sort","No Index (Natural COLLSCAN)",COLLSCAN,0,10000,683,10
+10000,"Status + Date Range + Sort","Single-Field Index {createdAt: 1}",IXSCAN,3377,3377,683,7
+10000,"Status + Date Range + Sort","Compound Index {status: 1, createdAt: 1}",IXSCAN,683,683,683,1
+100000,"Name Search (Regex)","Unanchored (.*Aarav.*) [COLLSCAN]",COLLSCAN,0,100000,4003,87
+100000,"Name Search (Regex)","Prefix (^aarav) with {nameLower: 1}",IXSCAN,4004,4003,4003,8
+100000,"Sort by Score (limit 20)","Top-20 No Index (In-Memory Sort)",COLLSCAN,0,100000,20,92
+100000,"Sort by Score (limit 20)","Top-20 WITH Index {faceMatchScore: -1}",IXSCAN,20,20,20,0
+100000,"Sort by Score (Unlimited)","Unlimited No Index (In-Memory Sort)",COLLSCAN,0,100000,45285,136
+100000,"Sort by Score (Unlimited)","Unlimited WITH Index {faceMatchScore: -1}",IXSCAN,45285,45285,45285,75
+100000,"Status + Date Range + Sort","No Index (Natural COLLSCAN)",COLLSCAN,0,100000,6679,100
+100000,"Status + Date Range + Sort","Single-Field Index {createdAt: 1}",IXSCAN,33359,33359,6679,93
+100000,"Status + Date Range + Sort","Compound Index {status: 1, createdAt: 1}",IXSCAN,6679,6679,6679,15
+500000,"Name Search (Regex)","Unanchored (.*Aarav.*) [COLLSCAN]",COLLSCAN,0,500000,19967,438
+500000,"Name Search (Regex)","Prefix (^aarav) with {nameLower: 1}",IXSCAN,19968,19967,19967,46
+500000,"Sort by Score (limit 20)","Top-20 No Index (In-Memory Sort)",COLLSCAN,0,500000,20,459
+500000,"Sort by Score (limit 20)","Top-20 WITH Index {faceMatchScore: -1}",IXSCAN,20,20,20,0
+500000,"Sort by Score (Unlimited)","Unlimited No Index (In-Memory Sort)",COLLSCAN,0,500000,227064,967
+500000,"Sort by Score (Unlimited)","Unlimited WITH Index {faceMatchScore: -1}",IXSCAN,227064,227064,227064,424
+500000,"Status + Date Range + Sort","No Index (Natural COLLSCAN)",COLLSCAN,0,500000,33452,494
+500000,"Status + Date Range + Sort","Single-Field Index {createdAt: 1}",IXSCAN,166585,166585,33452,542
+500000,"Status + Date Range + Sort","Compound Index {status: 1, createdAt: 1}",IXSCAN,33452,33452,33452,88

@@ -1,220 +1,275 @@
 {
-  "lastUpdated": "2026-10-09T19:18:10.031Z",
-  "sizesTested": [
-    10000,
-    100000,
-    500000
-  ],
+  "lastUpdated": "2026-10-09T20:28:39.662Z",
   "results": [
     {
       "size": 10000,
-      "query": "Status + Date Range + Sort",
-      "scenario": "No Index (Natural COLLSCAN)",
-      "stage": "COLLSCAN",
-      "totalKeysExamined": 0,
-      "totalDocsExamined": 10000,
-      "nReturned": 659,
-      "executionTimeMillis": 12
-    },
-    {
-      "size": 10000,
-      "query": "Status + Date Range + Sort",
-      "scenario": "Single-Field Index {createdAt: 1}",
-      "stage": "IXSCAN",
-      "totalKeysExamined": 3358,
-      "totalDocsExamined": 3358,
-      "nReturned": 659,
-      "executionTimeMillis": 10
-    },
-    {
-      "size": 10000,
-      "query": "Status + Date Range + Sort",
-      "scenario": "Compound Index {status: 1, createdAt: 1}",
-      "stage": "IXSCAN",
-      "totalKeysExamined": 659,
-      "totalDocsExamined": 659,
-      "nReturned": 659,
-      "executionTimeMillis": 2
-    },
-    {
-      "size": 10000,
       "query": "Name Search (Regex)",
       "scenario": "Unanchored (.*Aarav.*) [COLLSCAN]",
       "stage": "COLLSCAN",
-      "totalKeysExamined": 0,
-      "totalDocsExamined": 10000,
-      "nReturned": 383,
-      "executionTimeMillis": 11
+      "keysExamined": 0,
+      "docsExamined": 10000,
+      "nReturned": 384,
+      "medianMs": 9
     },
     {
       "size": 10000,
       "query": "Name Search (Regex)",
       "scenario": "Prefix (^aarav) with {nameLower: 1}",
       "stage": "IXSCAN",
-      "totalKeysExamined": 384,
-      "totalDocsExamined": 383,
-      "nReturned": 383,
-      "executionTimeMillis": 1
+      "keysExamined": 385,
+      "docsExamined": 384,
+      "nReturned": 384,
+      "medianMs": 1
     },
     {
       "size": 10000,
-      "query": "Sort by faceMatchScore",
-      "scenario": "No Index (In-Memory Sort)",
+      "query": "Sort by Score (limit 20)",
+      "scenario": "Top-20 No Index (In-Memory Sort)",
       "stage": "COLLSCAN",
-      "totalKeysExamined": 0,
-      "totalDocsExamined": 10000,
-      "nReturned": 4532,
-      "executionTimeMillis": 15
+      "keysExamined": 0,
+      "docsExamined": 10000,
+      "nReturned": 20,
+      "medianMs": 10
     },
     {
       "size": 10000,
-      "query": "Sort by faceMatchScore",
-      "scenario": "WITH Index {faceMatchScore: -1}",
+      "query": "Sort by Score (limit 20)",
+      "scenario": "Top-20 WITH Index {faceMatchScore: -1}",
       "stage": "IXSCAN",
-      "totalKeysExamined": 4532,
-      "totalDocsExamined": 4532,
-      "nReturned": 4532,
-      "executionTimeMillis": 9
+      "keysExamined": 20,
+      "docsExamined": 20,
+      "nReturned": 20,
+      "medianMs": 0
     },
     {
-      "size": 100000,
+      "size": 10000,
+      "query": "Sort by Score (Unlimited)",
+      "scenario": "Unlimited No Index (In-Memory Sort)",
+      "stage": "COLLSCAN",
+      "keysExamined": 0,
+      "docsExamined": 10000,
+      "nReturned": 4603,
+      "medianMs": 13
+    },
+    {
+      "size": 10000,
+      "query": "Sort by Score (Unlimited)",
+      "scenario": "Unlimited WITH Index {faceMatchScore: -1}",
+      "stage": "IXSCAN",
+      "keysExamined": 4603,
+      "docsExamined": 4603,
+      "nReturned": 4603,
+      "medianMs": 6
+    },
+    {
+      "size": 10000,
       "query": "Status + Date Range + Sort",
       "scenario": "No Index (Natural COLLSCAN)",
       "stage": "COLLSCAN",
-      "totalKeysExamined": 0,
-      "totalDocsExamined": 100000,
-      "nReturned": 6645,
-      "executionTimeMillis": 102
+      "keysExamined": 0,
+      "docsExamined": 10000,
+      "nReturned": 683,
+      "medianMs": 10
     },
     {
-      "size": 100000,
+      "size": 10000,
       "query": "Status + Date Range + Sort",
       "scenario": "Single-Field Index {createdAt: 1}",
       "stage": "IXSCAN",
-      "totalKeysExamined": 33165,
-      "totalDocsExamined": 33165,
-      "nReturned": 6645,
-      "executionTimeMillis": 101
+      "keysExamined": 3377,
+      "docsExamined": 3377,
+      "nReturned": 683,
+      "medianMs": 7
     },
     {
-      "size": 100000,
+      "size": 10000,
       "query": "Status + Date Range + Sort",
       "scenario": "Compound Index {status: 1, createdAt: 1}",
       "stage": "IXSCAN",
-      "totalKeysExamined": 6645,
-      "totalDocsExamined": 6645,
-      "nReturned": 6645,
-      "executionTimeMillis": 25
+      "keysExamined": 683,
+      "docsExamined": 683,
+      "nReturned": 683,
+      "medianMs": 1
     },
     {
       "size": 100000,
       "query": "Name Search (Regex)",
       "scenario": "Unanchored (.*Aarav.*) [COLLSCAN]",
       "stage": "COLLSCAN",
-      "totalKeysExamined": 0,
-      "totalDocsExamined": 100000,
-      "nReturned": 4041,
-      "executionTimeMillis": 97
+      "keysExamined": 0,
+      "docsExamined": 100000,
+      "nReturned": 4003,
+      "medianMs": 87
     },
     {
       "size": 100000,
       "query": "Name Search (Regex)",
       "scenario": "Prefix (^aarav) with {nameLower: 1}",
       "stage": "IXSCAN",
-      "totalKeysExamined": 4042,
-      "totalDocsExamined": 4041,
-      "nReturned": 4041,
-      "executionTimeMillis": 9
+      "keysExamined": 4004,
+      "docsExamined": 4003,
+      "nReturned": 4003,
+      "medianMs": 8
     },
     {
       "size": 100000,
-      "query": "Sort by faceMatchScore",
-      "scenario": "No Index (In-Memory Sort)",
+      "query": "Sort by Score (limit 20)",
+      "scenario": "Top-20 No Index (In-Memory Sort)",
       "stage": "COLLSCAN",
-      "totalKeysExamined": 0,
-      "totalDocsExamined": 100000,
-      "nReturned": 45733,
-      "executionTimeMillis": 134
+      "keysExamined": 0,
+      "docsExamined": 100000,
+      "nReturned": 20,
+      "medianMs": 92
     },
     {
       "size": 100000,
-      "query": "Sort by faceMatchScore",
-      "scenario": "WITH Index {faceMatchScore: -1}",
+      "query": "Sort by Score (limit 20)",
+      "scenario": "Top-20 WITH Index {faceMatchScore: -1}",
       "stage": "IXSCAN",
-      "totalKeysExamined": 45733,
-      "totalDocsExamined": 45733,
-      "nReturned": 45733,
-      "executionTimeMillis": 85
+      "keysExamined": 20,
+      "docsExamined": 20,
+      "nReturned": 20,
+      "medianMs": 0
     },
     {
-      "size": 500000,
+      "size": 100000,
+      "query": "Sort by Score (Unlimited)",
+      "scenario": "Unlimited No Index (In-Memory Sort)",
+      "stage": "COLLSCAN",
+      "keysExamined": 0,
+      "docsExamined": 100000,
+      "nReturned": 45285,
+      "medianMs": 136
+    },
+    {
+      "size": 100000,
+      "query": "Sort by Score (Unlimited)",
+      "scenario": "Unlimited WITH Index {faceMatchScore: -1}",
+      "stage": "IXSCAN",
+      "keysExamined": 45285,
+      "docsExamined": 45285,
+      "nReturned": 45285,
+      "medianMs": 75
+    },
+    {
+      "size": 100000,
       "query": "Status + Date Range + Sort",
       "scenario": "No Index (Natural COLLSCAN)",
       "stage": "COLLSCAN",
-      "totalKeysExamined": 0,
-      "totalDocsExamined": 500000,
-      "nReturned": 33449,
-      "executionTimeMillis": 500
+      "keysExamined": 0,
+      "docsExamined": 100000,
+      "nReturned": 6679,
+      "medianMs": 100
     },
     {
-      "size": 500000,
+      "size": 100000,
       "query": "Status + Date Range + Sort",
       "scenario": "Single-Field Index {createdAt: 1}",
       "stage": "IXSCAN",
-      "totalKeysExamined": 166378,
-      "totalDocsExamined": 166378,
-      "nReturned": 33449,
-      "executionTimeMillis": 540
+      "keysExamined": 33359,
+      "docsExamined": 33359,
+      "nReturned": 6679,
+      "medianMs": 93
     },
     {
-      "size": 500000,
+      "size": 100000,
       "query": "Status + Date Range + Sort",
       "scenario": "Compound Index {status: 1, createdAt: 1}",
       "stage": "IXSCAN",
-      "totalKeysExamined": 33449,
-      "totalDocsExamined": 33449,
-      "nReturned": 33449,
-      "executionTimeMillis": 87
+      "keysExamined": 6679,
+      "docsExamined": 6679,
+      "nReturned": 6679,
+      "medianMs": 15
     },
     {
       "size": 500000,
       "query": "Name Search (Regex)",
       "scenario": "Unanchored (.*Aarav.*) [COLLSCAN]",
       "stage": "COLLSCAN",
-      "totalKeysExamined": 0,
-      "totalDocsExamined": 500000,
-      "nReturned": 20132,
-      "executionTimeMillis": 433
+      "keysExamined": 0,
+      "docsExamined": 500000,
+      "nReturned": 19967,
+      "medianMs": 438
     },
     {
       "size": 500000,
       "query": "Name Search (Regex)",
       "scenario": "Prefix (^aarav) with {nameLower: 1}",
       "stage": "IXSCAN",
-      "totalKeysExamined": 20133,
-      "totalDocsExamined": 20132,
-      "nReturned": 20132,
-      "executionTimeMillis": 49
+      "keysExamined": 19968,
+      "docsExamined": 19967,
+      "nReturned": 19967,
+      "medianMs": 46
     },
     {
       "size": 500000,
-      "query": "Sort by faceMatchScore",
-      "scenario": "No Index (In-Memory Sort)",
+      "query": "Sort by Score (limit 20)",
+      "scenario": "Top-20 No Index (In-Memory Sort)",
       "stage": "COLLSCAN",
-      "totalKeysExamined": 0,
-      "totalDocsExamined": 124314,
-      "nReturned": 0,
-      "executionTimeMillis": 146
+      "keysExamined": 0,
+      "docsExamined": 500000,
+      "nReturned": 20,
+      "medianMs": 459
     },
     {
       "size": 500000,
-      "query": "Sort by faceMatchScore",
-      "scenario": "WITH Index {faceMatchScore: -1}",
+      "query": "Sort by Score (limit 20)",
+      "scenario": "Top-20 WITH Index {faceMatchScore: -1}",
       "stage": "IXSCAN",
-      "totalKeysExamined": 227797,
-      "totalDocsExamined": 227797,
-      "nReturned": 227797,
-      "executionTimeMillis": 425
+      "keysExamined": 20,
+      "docsExamined": 20,
+      "nReturned": 20,
+      "medianMs": 0
+    },
+    {
+      "size": 500000,
+      "query": "Sort by Score (Unlimited)",
+      "scenario": "Unlimited No Index (In-Memory Sort)",
+      "stage": "COLLSCAN",
+      "keysExamined": 0,
+      "docsExamined": 500000,
+      "nReturned": 227064,
+      "medianMs": 967
+    },
+    {
+      "size": 500000,
+      "query": "Sort by Score (Unlimited)",
+      "scenario": "Unlimited WITH Index {faceMatchScore: -1}",
+      "stage": "IXSCAN",
+      "keysExamined": 227064,
+      "docsExamined": 227064,
+      "nReturned": 227064,
+      "medianMs": 424
+    },
+    {
+      "size": 500000,
+      "query": "Status + Date Range + Sort",
+      "scenario": "No Index (Natural COLLSCAN)",
+      "stage": "COLLSCAN",
+      "keysExamined": 0,
+      "docsExamined": 500000,
+      "nReturned": 33452,
+      "medianMs": 494
+    },
+    {
+      "size": 500000,
+      "query": "Status + Date Range + Sort",
+      "scenario": "Single-Field Index {createdAt: 1}",
+      "stage": "IXSCAN",
+      "keysExamined": 166585,
+      "docsExamined": 166585,
+      "nReturned": 33452,
+      "medianMs": 542
+    },
+    {
+      "size": 500000,
+      "query": "Status + Date Range + Sort",
+      "scenario": "Compound Index {status: 1, createdAt: 1}",
+      "stage": "IXSCAN",
+      "keysExamined": 33452,
+      "docsExamined": 33452,
+      "nReturned": 33452,
+      "medianMs": 88
     }
   ]
 }
