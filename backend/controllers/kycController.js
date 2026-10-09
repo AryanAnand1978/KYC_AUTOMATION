@@ -272,24 +272,84 @@ const verifyFace = async (req, res) => {
     }
 
     session.faceMatchScore = Math.round(confidence);
-    await logEvent(session.sessionId, 'FACE_COMPARED', 'Selfie compared against Aadhaar face.', {
-      score: session.faceMatchScore,
-      threshold: 80
-    });
+    const passed = confidence >= 80;
+    const challenges = ["SHOW_LEFT_HAND", "SHOW_RIGHT_HAND", "TURN_HEAD_LEFT", "TURN_HEAD_RIGHT"];
+    const randomChallenge = challenges[Math.floor(Math.random() * challenges.length)];
 
-    if (confidence >= 80) {
-      // Choose random challenge
-      const challenges = ["SHOW_LEFT_HAND", "SHOW_RIGHT_HAND", "TURN_HEAD_LEFT", "TURN_HEAD_RIGHT"];
-      const randomChallenge = challenges[Math.floor(Math.random() * challenges.length)];
+    const isReplica = await connectDB.isReplicaSet();
+    let updated;
 
-      if (req.body.useLegacy) {
-        // LEGACY (check-then-save, vulnerable to race conditions)
-        session.challenge = randomChallenge;
-        session.status = "FACE_VERIFIED";
-        await session.save();
-      } else {
-        // ATOMIC CONDITIONAL UPDATE: only update if status is still PENDING
-        const updated = await Session.findOneAndUpdate(
+    if (isReplica) {
+      const dbSession = await mongoose.startSession();
+      try {
+        await dbSession.withTransaction(async () => {
+          if (passed) {
+            updated = await Session.findOneAndUpdate(
+              { sessionId, status: 'PENDING' },
+              {
+                $set: {
+                  status: "FACE_VERIFIED",
+                  challenge: randomChallenge,
+                  faceMatchScore: session.faceMatchScore,
+                  selfieImagePath: selfieImagePath
+                }
+              },
+              { new: true, session: dbSession }
+            );
+          } else {
+            updated = await Session.findOneAndUpdate(
+              { sessionId, status: 'PENDING' },
+              {
+                $set: {
+                  status: "FAILED",
+                  completedAt: new Date(),
+                  faceMatchScore: session.faceMatchScore,
+                  selfieImagePath: selfieImagePath
+                }
+              },
+              { new: true, session: dbSession }
+            );
+          }
+
+          if (!updated) {
+            throw new Error('CONCURRENCY_CONFLICT');
+          }
+
+          // FACE_COMPARED audit write inside the transaction
+          await logEvent(session.sessionId, 'FACE_COMPARED', 'Selfie compared against Aadhaar face.', {
+            score: session.faceMatchScore,
+            threshold: 80
+          }, dbSession);
+
+          if (passed) {
+            await logEvent(session.sessionId, 'FACE_PASSED', 'Face match passed the 80% threshold.', {
+              score: session.faceMatchScore
+            }, dbSession);
+            await logEvent(session.sessionId, 'CHALLENGE_ASSIGNED', `Liveness challenge assigned: ${randomChallenge}.`, {
+              challenge: randomChallenge
+            }, dbSession);
+          } else {
+            await logEvent(session.sessionId, 'FACE_FAILED', 'Face match fell below the 80% threshold.', {
+              score: session.faceMatchScore
+            }, dbSession);
+            await logEvent(session.sessionId, 'SESSION_FAILED', 'Session failed at face verification.', {}, dbSession);
+          }
+        });
+      } catch (txErr) {
+        deleteFile(selfieImagePath);
+        if (txErr.message === 'CONCURRENCY_CONFLICT') {
+          return res.status(409).json({
+            error: "Conflict: Session state was modified concurrently or is no longer PENDING."
+          });
+        }
+        throw txErr;
+      } finally {
+        await dbSession.endSession();
+      }
+    } else {
+      // Fallback for standalone MongoDB
+      if (passed) {
+        updated = await Session.findOneAndUpdate(
           { sessionId, status: 'PENDING' },
           {
             $set: {
@@ -301,38 +361,8 @@ const verifyFace = async (req, res) => {
           },
           { new: true }
         );
-
-        if (!updated) {
-          deleteFile(selfieImagePath);
-          return res.status(409).json({
-            error: "Conflict: Session state was modified concurrently or is no longer PENDING."
-          });
-        }
-      }
-
-      await logEvent(session.sessionId, 'FACE_PASSED', 'Face match passed the 80% threshold.', {
-        score: session.faceMatchScore
-      });
-      await logEvent(session.sessionId, 'CHALLENGE_ASSIGNED', `Liveness challenge assigned: ${randomChallenge}.`, {
-        challenge: randomChallenge
-      });
-
-      return res.status(200).json({
-        message: "Face Verification Passed!",
-        status: "FACE_VERIFIED",
-        faceMatchScore: session.faceMatchScore,
-        challenge: randomChallenge
-      });
-    } else {
-      // Fail Session & Cleanup files
-      if (req.body.useLegacy) {
-        // LEGACY (check-then-save)
-        session.status = "FAILED";
-        session.completedAt = new Date();
-        await session.save();
       } else {
-        // ATOMIC CONDITIONAL UPDATE: only update if status is still PENDING
-        const updated = await Session.findOneAndUpdate(
+        updated = await Session.findOneAndUpdate(
           { sessionId, status: 'PENDING' },
           {
             $set: {
@@ -344,22 +374,44 @@ const verifyFace = async (req, res) => {
           },
           { new: true }
         );
-
-        if (!updated) {
-          deleteFile(selfieImagePath);
-          return res.status(409).json({
-            error: "Conflict: Session state was modified concurrently or is no longer PENDING."
-          });
-        }
       }
 
-      await logEvent(session.sessionId, 'FACE_FAILED', 'Face match fell below the 80% threshold.', {
-        score: session.faceMatchScore
+      if (!updated) {
+        deleteFile(selfieImagePath);
+        return res.status(409).json({
+          error: "Conflict: Session state was modified concurrently or is no longer PENDING."
+        });
+      }
+
+      await logEvent(session.sessionId, 'FACE_COMPARED', 'Selfie compared against Aadhaar face.', {
+        score: session.faceMatchScore,
+        threshold: 80
       });
-      await logEvent(session.sessionId, 'SESSION_FAILED', 'Session failed at face verification.');
 
-      await cleanupSessionMedia(session);
+      if (passed) {
+        await logEvent(session.sessionId, 'FACE_PASSED', 'Face match passed the 80% threshold.', {
+          score: session.faceMatchScore
+        });
+        await logEvent(session.sessionId, 'CHALLENGE_ASSIGNED', `Liveness challenge assigned: ${randomChallenge}.`, {
+          challenge: randomChallenge
+        });
+      } else {
+        await logEvent(session.sessionId, 'FACE_FAILED', 'Face match fell below the 80% threshold.', {
+          score: session.faceMatchScore
+        });
+        await logEvent(session.sessionId, 'SESSION_FAILED', 'Session failed at face verification.');
+      }
+    }
 
+    if (passed) {
+      return res.status(200).json({
+        message: "Face Verification Passed!",
+        status: "FACE_VERIFIED",
+        faceMatchScore: session.faceMatchScore,
+        challenge: randomChallenge
+      });
+    } else {
+      await cleanupSessionMedia(updated);
       return res.status(200).json({
         message: "Face Verification Failed. Match score below threshold (80%).",
         status: "FAILED",
@@ -419,70 +471,7 @@ const verifyChallenge = async (req, res) => {
 
     const attemptedChallenge = session.challenge;
 
-    // Support legacy check-then-save branch for demonstration/benchmarking
-    if (req.body.useLegacy) {
-      session.attempts += 1;
-      await logEvent(session.sessionId, 'CHALLENGE_ATTEMPTED', `Liveness challenge attempted: ${attemptedChallenge || 'unknown'}.`, {
-        challenge: attemptedChallenge,
-        attempt: session.attempts,
-        success: !!success
-      });
-
-      if (success) {
-        // Small async pause simulating thread concurrency window
-        await new Promise(r => setTimeout(r, 40));
-        session.status = "VERIFIED";
-        session.completedAt = new Date();
-        await session.save();
-
-        await logEvent(session.sessionId, 'CHALLENGE_PASSED', 'Liveness challenge passed.', {
-          challenge: attemptedChallenge,
-          attempt: session.attempts
-        });
-        await logEvent(session.sessionId, 'SESSION_VERIFIED', 'Session fully verified.', {
-          attempts: session.attempts,
-          faceMatchScore: session.faceMatchScore
-        });
-
-        await cleanupSessionMedia(session);
-
-        return res.status(200).json({
-          message: "Verification Successful!",
-          status: "VERIFIED",
-          attempts: session.attempts
-        });
-      } else {
-        if (session.attempts < 2) {
-          const challenges = ["SHOW_LEFT_HAND", "SHOW_RIGHT_HAND", "TURN_HEAD_LEFT", "TURN_HEAD_RIGHT"];
-          const remainingChallenges = challenges.filter(c => c !== session.challenge);
-          const newChallenge = remainingChallenges[Math.floor(Math.random() * remainingChallenges.length)];
-          session.challenge = newChallenge;
-          await session.save();
-
-          return res.status(200).json({
-            message: "Challenge failed. 1 attempt remaining.",
-            status: "FACE_VERIFIED",
-            attempts: session.attempts,
-            retry: true,
-            nextChallenge: newChallenge
-          });
-        } else {
-          session.status = "FAILED";
-          session.completedAt = new Date();
-          await session.save();
-          await cleanupSessionMedia(session);
-
-          return res.status(200).json({
-            message: "Challenge failed. All attempts used.",
-            status: "FAILED",
-            attempts: session.attempts,
-            retry: false
-          });
-        }
-      }
-    }
-
-    // ATOMIC CONDITIONAL UPDATE + TRANSACTION (Fixed logic)
+    // ATOMIC CONDITIONAL UPDATE + TRANSACTION
     if (success) {
       let updated;
       const isReplica = await connectDB.isReplicaSet();
@@ -507,6 +496,11 @@ const verifyChallenge = async (req, res) => {
               throw new Error('CONCURRENCY_CONFLICT');
             }
 
+            // Test hook for demonstrating ACID transaction rollback (ignored in production)
+            if (process.env.NODE_ENV !== 'production' && process.env.FAIL_AFTER_STATUS_UPDATE === 'true') {
+              throw new Error('SIMULATED_TRANSACTION_ROLLBACK_AFTER_STATUS_UPDATE');
+            }
+
             await logEvent(session.sessionId, 'CHALLENGE_ATTEMPTED', `Liveness challenge attempted: ${attemptedChallenge || 'unknown'}.`, {
               challenge: attemptedChallenge,
               attempt: updated.attempts,
@@ -525,6 +519,12 @@ const verifyChallenge = async (req, res) => {
           if (txErr.message === 'CONCURRENCY_CONFLICT') {
             return res.status(409).json({
               error: "Conflict: Session state was modified concurrently or is no longer in FACE_VERIFIED state."
+            });
+          }
+          if (txErr.message === 'SIMULATED_TRANSACTION_ROLLBACK_AFTER_STATUS_UPDATE') {
+            return res.status(500).json({
+              error: "Simulated failure after status update. Transaction aborted and rolled back.",
+              rolledBack: true
             });
           }
           throw txErr;
