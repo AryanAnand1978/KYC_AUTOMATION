@@ -1,84 +1,119 @@
 # Technical Requirements Document (TRD)
 
-# Automated Video KYC Verification System
+# Automated Video KYC Verification System with Admin Intelligence & Audit Trail
 
 ## 1. Technical Overview
 
-The system is a full-stack KYC verification prototype with a React frontend and an Express/MongoDB backend. The frontend manages user interaction, webcam capture, and browser-side liveness detection. The backend manages file uploads, OCR, face detection, face comparison, session state, expiry, and cleanup.
+The system is a full-stack, automated Video KYC verification and compliance management application consisting of a React frontend and an Express/MongoDB backend. The architecture supports two operational workflows:
+1. **Applicant Verification Pipeline**: File upload validation, OCR identity extraction, face detection/cropping, biometric facial comparison, client-side MediaPipe liveness challenges, and ephemeral media cleanup.
+2. **Admin Intelligence & Audit Engine**: Persistent verification session records, salted SHA-256 Aadhaar hashing with server-side pepper, append-only `AuditEvent` lifecycle logging, shared-secret Bearer authentication, and aggregation-driven analytics visualized with Recharts.
 
 High-level architecture:
 
 ```text
-React + Vite Frontend
-        |
-        | HTTP / Axios
-        v
-Express Backend API
-        |
-        | Mongoose
-        v
-MongoDB
-        |
-        | External APIs
-        v
-Gemini / Google Vision OCR + Face++
++---------------------------------------------------------------------------------------+
+|                                    REACT FRONTEND                                     |
+|                                                                                       |
+|   +-----------------------+     +------------------------+     +------------------+   |
+|   | Applicant Experience  |     |   Admin Intelligence   |     | Recharts Visuals |   |
+|   |  Upload / Live Selfie |     |  Dashboard / Filtered  |     | Status, Trends,  |   |
+|   |  MediaPipe Liveness   |     |    Explorer & Audit    |     |  Challenge Rates |   |
+|   +-----------------------+     +------------------------+     +------------------+   |
++---------------------------------------------------------------------------------------+
+                                    |                   |
+                     Public Client  |                   | Admin Client (Bearer Token)
+                     (api instance) |                   | (adminApi instance)
+                                    v                   v
++---------------------------------------------------------------------------------------+
+|                                  EXPRESS BACKEND API                                  |
+|                                                                                       |
+|   +-----------------------+     +------------------------+     +------------------+   |
+|   |  kycRoutes & Limiter  |     |  adminRoutes & Limiter |     | adminAuth Guard  |   |
+|   |   Upload / Compare /  |     |    List / Detail /     |     | Timing-Safe Bearer|  |
+|   |        Challenge      |     |     Stats Endpoints    |     | Token Comparison |   |
+|   +-----------------------+     +------------------------+     +------------------+   |
+|               |                             |                             |           |
+|               +-----------------------------+-----------------------------+           |
+|                                             v                                         |
+|                                      CONTROLLERS                                      |
+|                                 kycController / adminController                       |
++---------------------------------------------------------------------------------------+
+                |                                             |
+                v                                             v
++------------------------------------+      +-------------------------------------------+
+|          EXTERNAL SERVICES         |      |             MONGODB DATABASE              |
+|                                    |      |                                           |
+|  - Gemini 2.5 Flash / Vision OCR   |      |  - sessions collection                    |
+|  - Face++ Detect & Compare         |      |    (Salted hash, masked display, indexes) |
+|  - Local Jimp fallback / Mock Mode |      |  - auditevents collection                 |
++------------------------------------+      |    (Append-only chronological trail)      |
+                                            +-------------------------------------------+
 ```
 
 ## 2. Technology Stack
 
 ### Frontend
 
-- React
-- Vite
-- React Router
-- Axios
-- Tailwind CSS
-- Lucide React
-- React Webcam
-- MediaPipe Hands
-- MediaPipe Face Mesh
+- **Core**: React 19, Vite 8
+- **Routing**: React Router 7 (`react-router-dom`)
+- **Networking**: Axios (dual configured instances: `api` and `adminApi`)
+- **Styling**: Tailwind CSS 4, PostCSS, Custom glassmorphism design tokens
+- **Icons**: Lucide React
+- **Camera Capture**: React Webcam
+- **Real-Time Client ML**: MediaPipe Hands (`@mediapipe/hands`), MediaPipe Face Mesh (`@mediapipe/face_mesh`), Camera Utils (`@mediapipe/camera_utils`)
+- **Data Visualization**: Recharts 2 (BarChart, AreaChart, PieChart, Tooltips, ResponsiveContainer)
 
 ### Backend
 
-- Node.js
-- Express
-- MongoDB
-- Mongoose
-- Multer
-- Axios
-- Jimp
-- FormData
-- Express Rate Limit
-- dotenv
-- CORS
+- **Runtime**: Node.js
+- **Server Framework**: Express 4
+- **Database**: MongoDB via Mongoose 8
+- **File Uploads**: Multer (disk storage, regex mime filters, 5MB ceiling)
+- **Image Processing**: Jimp (biometric face cropping with 10% bounding box padding)
+- **Security & Crypto**: Node.js built-in `crypto` (salted SHA-256 Aadhaar hashing, UUID generation, timing-safe token checks via `crypto.timingSafeEqual`)
+- **Rate Limiting**: Express Rate Limit (upload, verification, and admin routes)
+- **External Communications**: Axios, Form-Data
+- **Environment Management**: Dotenv, CORS
 
 ## 3. Runtime Requirements
 
 ### Frontend Runtime
 
-- Node.js environment capable of running Vite.
-- Browser with camera access.
-- Browser support for webcam APIs.
-- Network access to MediaPipe CDN scripts during normal liveness mode.
+- Node.js (v18+) capable of executing Vite dev/build pipelines.
+- Modern desktop/mobile web browser supporting WebRTC `navigator.mediaDevices.getUserMedia`.
+- Network connectivity to CDN endpoints (`cdn.jsdelivr.net`) to stream MediaPipe model binaries.
+- LocalStorage access for persistent admin session token caching.
 
 ### Backend Runtime
 
-- Node.js environment.
-- MongoDB running locally or reachable through `MONGODB_URI`.
-- Environment variables for real OCR/face services, or mock mode enabled.
+- Node.js (v18+) execution environment.
+- MongoDB instance (v5.0+) accessible via connection URI.
+- File system read/write permissions for temporary upload directories (`uploads/aadhaar/`, `uploads/selfies/`).
 
 ### Environment Variables
 
-Expected backend environment variables:
+Backend environment configuration (`backend/.env`):
 
-```text
-PORT
-MONGODB_URI
-MOCK_MODE
-GEMINI_API_KEY
-GOOGLE_VISION_API_KEY
-FACEPLUSPLUS_API_KEY
-FACEPLUSPLUS_API_SECRET
+```env
+PORT=5000
+MONGODB_URI=mongodb://127.0.0.1:27017/kyc-verification
+MOCK_MODE=true
+
+# OCR & Biometric APIs
+GEMINI_API_KEY=your_gemini_api_key
+GOOGLE_VISION_API_KEY=your_vision_api_key
+FACEPLUSPLUS_API_KEY=your_facepp_api_key
+FACEPLUSPLUS_API_SECRET=your_facepp_api_secret
+
+# Security & Admin Intelligence
+ADMIN_TOKEN=your_secure_admin_shared_key
+AADHAAR_HASH_PEPPER=your_secret_pii_hash_pepper
+```
+
+Frontend environment configuration (`frontend/.env`):
+
+```env
+VITE_API_URL=http://localhost:5000
 ```
 
 ## 4. System Components
@@ -86,650 +121,383 @@ FACEPLUSPLUS_API_SECRET
 ### Frontend Components
 
 #### `frontend/src/App.jsx`
+- Configures client routing and navigation layout.
+- Renders responsive header with live node connectivity badge.
+- Enforces route guard (`RequireAdmin`) redirecting unauthenticated users to `/admin`.
+- Catch-all 404 handler for invalid routes.
 
-Responsibilities:
-
-- Defines application layout.
-- Configures React Router.
-- Maps pages to routes.
-- Renders common header and footer.
-
-Routes:
-
+Routes configured:
 ```text
-/                    -> UploadPage
-/verify/:sessionId   -> VerificationPage
-/result/:sessionId   -> ResultPage
+/                               -> UploadPage
+/verify/:sessionId              -> VerificationPage
+/result/:sessionId              -> ResultPage
+/admin                          -> AdminLoginPage
+/admin/dashboard                -> RequireAdmin(AdminDashboardPage)
+/admin/verifications/:sessionId -> RequireAdmin(VerificationDetailPage)
+*                               -> NotFound
 ```
+
+#### `frontend/src/api.js`
+- Exports `api`: Public Axios instance configured with `baseURL: VITE_API_URL`.
+- Exports `adminApi`: Authenticated Axios instance with dynamic request interceptor attaching `Authorization: Bearer <token>`.
+- Manages `getAdminToken()`, `setAdminToken()`, and `clearAdminToken()` via `localStorage`.
 
 #### `frontend/src/pages/UploadPage.jsx`
-
-Responsibilities:
-
-- File selection and drag-and-drop.
-- Frontend file validation.
-- Multipart upload to backend.
-- Display extracted Aadhaar details.
-- Generate full verification URL.
-- Copy link to clipboard.
-
-Backend endpoint used:
-
-```text
-POST /api/upload-aadhaar
-```
+- Drag-and-drop / file picker interface for Aadhaar documents.
+- Client-side size (< 5MB) and format (`image/jpeg`, `image/png`) validation.
+- Submits multipart form to `POST /api/upload-aadhaar`.
+- Displays extracted applicant name and masked Aadhaar.
+- Generates dynamic verification link with one-click clipboard copying.
 
 #### `frontend/src/pages/VerificationPage.jsx`
-
-Responsibilities:
-
-- Read `sessionId` from route params.
-- Fetch session from backend.
-- Capture webcam selfie.
-- Submit selfie for face comparison.
-- Initialize MediaPipe challenge.
-- Evaluate hand/head movement.
-- Submit challenge result.
-- Redirect to result page.
-
-Backend endpoints used:
-
-```text
-GET  /api/session/:sessionId
-POST /api/verify-face
-POST /api/verify-challenge
-```
+- Fetches session details via `GET /api/session/:sessionId`.
+- Manages webcam video stream with alignment guide overlay.
+- Captures selfie snapshot and submits to `POST /api/verify-face`.
+- Dynamically activates MediaPipe Hands or Face Mesh based on assigned challenge.
+- Displays interactive landmark tracking canvas and 20-second countdown timer.
+- Submits challenge evaluation to `POST /api/verify-challenge`.
+- Automatically transitions to `/result/:sessionId` upon terminal completion.
 
 #### `frontend/src/pages/ResultPage.jsx`
+- Fetches non-destructive final outcome from `GET /api/result/:sessionId`.
+- Displays status badge (`VERIFIED`, `FAILED`, `EXPIRED`).
+- Displays diagnostic breakdown: match score, challenge variant, attempts used, timestamps.
 
-Responsibilities:
+#### `frontend/src/pages/admin/AdminLoginPage.jsx`
+- Secured access form for operators to enter the shared admin key.
+- Validates token against `GET /api/admin/verify`.
+- Stores valid token in `localStorage` and redirects to `/admin/dashboard`.
 
-- Fetch final session result.
-- Display verification status.
-- Display applicant data and diagnostics.
-- Explain success, failure, or expiry.
+#### `frontend/src/pages/admin/AdminDashboardPage.jsx`
+- Administrative command center.
+- Top KPI stat cards: Total Verifications, Distinct Applicants, Pass Rate, Avg Match Score, Challenge Success Rate, Today's Volume.
+- Interactive Recharts visualizers:
+  - 30-Day verification trends (Total vs. Verified vs. Failed AreaChart).
+  - Status distribution breakdown (BarChart).
+  - Liveness challenge performance by type (Horizontal BarChart).
+- Filterable and paginated Verifications Explorer:
+  - Regex search input (by applicant name or masked Aadhaar).
+  - Status dropdown selector (`ALL`, `PENDING`, `FACE_VERIFIED`, `VERIFIED`, `FAILED`, `EXPIRED`).
+  - Creation date range pickers (`from`, `to`).
+  - Sorting criteria (`newest`, `oldest`, `score`).
+  - Pagination controls with total count indicators.
 
-Backend endpoint used:
-
-```text
-GET /api/result/:sessionId
-```
-
-#### `frontend/index.html`
-
-Responsibilities:
-
-- Loads React root.
-- Loads fonts.
-- Loads MediaPipe scripts from CDN:
-
-```text
-@mediapipe/camera_utils
-@mediapipe/hands
-@mediapipe/face_mesh
-```
+#### `frontend/src/pages/admin/VerificationDetailPage.jsx`
+- Comprehensive audit view for an individual verification record.
+- Displays full session attributes: Session UUID, Name, Masked Aadhaar, Salted SHA-256 Hash, Match Score, IP Address, User Agent, and Completion Timestamps.
+- Renders an interactive chronological timeline of all associated `AuditEvent` entries with metadata tags.
 
 ### Backend Components
 
 #### `backend/server.js`
-
-Responsibilities:
-
-- Load environment variables.
-- Connect to MongoDB.
-- Configure Express.
-- Enable CORS.
-- Configure JSON body limits.
-- Serve upload directory statically.
-- Mount KYC routes under `/api`.
-- Expose `/health`.
-- Create upload directories.
-- Start cleanup interval for expired sessions.
-- Start HTTP server.
+- Initializes Express application, CORS rules, and 10MB JSON body limit (for base64 webcam selfies).
+- Connects to MongoDB via `config/db.js`.
+- Mounts public KYC endpoints under `/api`.
+- Mounts administrative endpoints under `/api/admin`.
+- Exposes health probe route `GET /health`.
+- Manages automated 2-minute interval job expiring stale sessions (> 10 minutes) and unlinking orphan biometric files.
 
 #### `backend/config/db.js`
-
-Responsibilities:
-
-- Connect to MongoDB with Mongoose.
-- Use `MONGODB_URI` if available.
-- Use local database fallback:
-
-```text
-mongodb://127.0.0.1:27017/kyc-verification
-```
+- Connects Mongoose to MongoDB host specified in `MONGODB_URI` with fallback to local replica.
 
 #### `backend/models/Session.js`
+- MongoDB schema representing the verification session.
+- Fields: `sessionId`, `name`, `aadhaarHash` (salted SHA-256, indexed), `aadhaarMasked`, `aadhaarImagePath`, `aadhaarFacePath`, `selfieImagePath`, `faceMatchScore`, `challenge`, `attempts`, `status`, `ipAddress`, `userAgent`, `createdAt`, `updatedAt`, `completedAt`.
+- Schema instance method `isExpired()` evaluates 10-minute expiry window.
 
-Responsibilities:
+#### `backend/models/AuditEvent.js`
+- Append-only schema recording per-session audit events.
+- Fields: `sessionId` (indexed), `type` (indexed enum), `message`, `meta` (arbitrary JSON schema), `createdAt` (indexed).
+- Event types: `SESSION_CREATED`, `FACE_COMPARED`, `CHALLENGE_ATTEMPTED`, `SESSION_VERIFIED`, `SESSION_FAILED`, `SESSION_EXPIRED`.
 
-- Define KYC session schema.
-- Enforce allowed status values.
-- Store verification metadata.
-- Provide `isExpired()` helper.
+#### `backend/services/auditService.js`
+- Exports non-blocking `logEvent(sessionId, type, message, meta)` helper.
+- Fire-and-forget execution ensures logging failures do not interrupt applicant onboarding flows.
 
-#### `backend/routes/kycRoutes.js`
+#### `backend/middleware/adminAuth.js`
+- Express authorization middleware guarding administrative routes.
+- Extracts `Bearer <token>` from the HTTP `Authorization` header.
+- Compares supplied token against `process.env.ADMIN_TOKEN` using `crypto.timingSafeEqual` over fixed-length UTF-8 buffers.
+- Rejects missing, malformed, or invalid tokens with HTTP 401 Unauthorized.
 
-Responsibilities:
-
-- Define REST API endpoints.
-- Configure Multer upload storage.
-- Validate upload file type.
-- Limit upload size.
-- Apply rate limits.
-- Forward requests to controller.
-- Handle Multer errors.
+#### `backend/controllers/adminController.js`
+- `verifyToken`: Validates admin bearer token.
+- `listVerifications`: Paginated query engine with regex search, status filter, date ranges, and sorting.
+- `getVerificationDetail`: Fetches individual session alongside its chronological `AuditEvent` trail.
+- `getStats`: High-performance analytics engine powered by parallel MongoDB aggregation pipelines ($group, $match, $dateToString, $cond, $count).
 
 #### `backend/controllers/kycController.js`
+- Business logic for applicant verification.
+- Manages upload handling, OCR coordination, biometric comparison, dynamic challenge assignment, and terminal file deletion.
+- Emits audit events via `auditService` at each lifecycle milestone.
 
-Responsibilities:
+#### `backend/scripts/migratePII.js`
+- Migration script to backfill salted SHA-256 hashes and masked Aadhaar strings for legacy un-hashed records.
 
-- Implement KYC business logic.
-- Create sessions.
-- Fetch sessions.
-- Verify face match.
-- Verify liveness challenge.
-- Fetch result.
-- Mask Aadhaar number.
-- Cleanup media files.
+## 5. API Specifications
 
-#### `backend/services/ocrService.js`
+### Public Applicant Endpoints
 
-Responsibilities:
-
-- Extract name and Aadhaar number.
-- Use Gemini API when configured.
-- Use Google Vision OCR fallback when configured.
-- Use mock response when mock mode is active.
-
-#### `backend/services/faceService.js`
-
-Responsibilities:
-
-- Detect face in Aadhaar image.
-- Crop Aadhaar face using Jimp.
-- Compare Aadhaar face and selfie using Face++.
-- Provide mock detection/comparison behavior.
-
-## 5. API Requirements
-
-### `POST /api/upload-aadhaar`
-
-Purpose:
-
-Create a KYC session from an uploaded Aadhaar image.
-
-Request:
-
-```text
-Content-Type: multipart/form-data
-Field: aadhaar
-```
-
-Success response:
-
-```json
-{
-  "sessionId": "uuid",
-  "verificationLink": "/verify/session-id",
-  "extractedData": {
-    "name": "USER NAME",
-    "aadhaarNumber": "XXXX XXXX 1234"
+#### `POST /api/upload-aadhaar`
+- **Rate Limit**: 15 requests / 15 minutes / IP
+- **Payload**: `multipart/form-data` with file field `aadhaar`
+- **Output**: `201 Created`
+  ```json
+  {
+    "sessionId": "4a737f10-1845-4df3-bc32-75d1f5e27a6c",
+    "verificationLink": "/verify/4a737f10-1845-4df3-bc32-75d1f5e27a6c",
+    "extractedData": {
+      "name": "AARAV SHARMA",
+      "aadhaarNumber": "XXXX XXXX 9012"
+    }
   }
-}
-```
+  ```
 
-Failure cases:
+#### `GET /api/session/:sessionId`
+- **Output**: `200 OK`
+  ```json
+  {
+    "sessionId": "4a737f10-1845-4df3-bc32-75d1f5e27a6c",
+    "name": "AARAV SHARMA",
+    "aadhaarNumber": "XXXX XXXX 9012",
+    "status": "PENDING",
+    "challenge": "",
+    "attempts": 0,
+    "createdAt": "2026-10-09T12:00:00.000Z"
+  }
+  ```
 
-- missing file
-- invalid file type
-- file too large
-- OCR failure
-- face detection failure
-- server/database error
+#### `POST /api/verify-face`
+- **Rate Limit**: 30 requests / 5 minutes / IP
+- **Payload**: `{ "sessionId": "...", "selfie": "data:image/jpeg;base64,..." }`
+- **Pass Output**: `200 OK`
+  ```json
+  {
+    "message": "Face Verification Passed!",
+    "status": "FACE_VERIFIED",
+    "faceMatchScore": 92.5,
+    "challenge": "SHOW_LEFT_HAND"
+  }
+  ```
+- **Fail Output**: `200 OK` (`status: "FAILED"`, `faceMatchScore: 45.0`)
 
-### `GET /api/session/:sessionId`
+#### `POST /api/verify-challenge`
+- **Rate Limit**: 30 requests / 5 minutes / IP
+- **Payload**: `{ "sessionId": "...", "success": true, "image": "data:image/jpeg;base64,..." }`
+- **Success Output**: `200 OK`
+  ```json
+  {
+    "message": "Verification Successful!",
+    "status": "VERIFIED",
+    "attempts": 1
+  }
+  ```
+- **Retry Output**: `200 OK` (`status: "FACE_VERIFIED"`, `retry: true`, `challenge: "TURN_HEAD_RIGHT"`)
+- **Terminal Fail Output**: `200 OK` (`status: "FAILED"`, `attempts": 2`)
 
-Purpose:
+#### `GET /api/result/:sessionId`
+- Non-destructive query returning terminal status, scores, masked Aadhaar, and completed timestamp.
 
-Fetch active session details for the verification screen.
+---
 
-Success response:
+### Administrative Endpoints (`/api/admin/*`)
 
-```json
+*All administrative routes require header `Authorization: Bearer <ADMIN_TOKEN>` and are rate-limited to 200 req / 5 min.*
+
+#### `GET /api/admin/verify`
+- Validates the admin bearer token. Returns `{ "ok": true }`.
+
+#### `GET /api/admin/verifications`
+- Query Params: `page` (default 1), `limit` (default 20), `status`, `q`, `from`, `to`, `sort` (`newest`, `oldest`, `score`).
+- **Output**: `200 OK`
+  ```json
+  {
+    "items": [
+      {
+        "sessionId": "4a737f10-1845-4df3-bc32-75d1f5e27a6c",
+        "name": "AARAV SHARMA",
+        "aadhaarMasked": "XXXX XXXX 9012",
+        "status": "VERIFIED",
+        "faceMatchScore": 92.5,
+        "challenge": "SHOW_LEFT_HAND",
+        "attempts": 1,
+        "createdAt": "2026-10-09T12:00:00.000Z",
+        "completedAt": "2026-10-09T12:01:15.000Z"
+      }
+    ],
+    "total": 1,
+    "page": 1,
+    "pages": 1,
+    "limit": 20
+  }
+  ```
+
+#### `GET /api/admin/verifications/:sessionId`
+- **Output**: `200 OK`
+  ```json
+  {
+    "verification": {
+      "sessionId": "...",
+      "name": "AARAV SHARMA",
+      "aadhaarMasked": "XXXX XXXX 9012",
+      "aadhaarHash": "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8",
+      "status": "VERIFIED",
+      "faceMatchScore": 92.5,
+      "challenge": "SHOW_LEFT_HAND",
+      "attempts": 1,
+      "ipAddress": "127.0.0.1",
+      "userAgent": "Mozilla/5.0 ...",
+      "createdAt": "...",
+      "completedAt": "..."
+    },
+    "events": [
+      {
+        "type": "SESSION_CREATED",
+        "message": "Aadhaar uploaded and session initialized.",
+        "meta": { "ip": "127.0.0.1" },
+        "createdAt": "2026-10-09T12:00:00.000Z"
+      },
+      {
+        "type": "FACE_COMPARED",
+        "message": "Face verification succeeded.",
+        "meta": { "score": 92.5, "passed": true },
+        "createdAt": "2026-10-09T12:00:30.000Z"
+      },
+      {
+        "type": "SESSION_VERIFIED",
+        "message": "KYC verification completed successfully.",
+        "meta": { "attempts": 1 },
+        "createdAt": "2026-10-09T12:01:15.000Z"
+      }
+    ]
+  }
+  ```
+
+#### `GET /api/admin/stats`
+- Aggregates multi-dimensional metrics via MongoDB aggregation pipelines.
+- **Output**: `200 OK`
+  ```json
+  {
+    "totals": {
+      "total": 142,
+      "pending": 5,
+      "faceVerified": 3,
+      "verified": 118,
+      "failed": 12,
+      "expired": 4,
+      "today": 18,
+      "distinctApplicants": 130
+    },
+    "rates": {
+      "passRate": 83.1,
+      "avgFaceMatchScore": 89.4,
+      "challengeSuccessRate": 91.2
+    },
+    "statusBreakdown": [
+      { "status": "VERIFIED", "count": 118 },
+      { "status": "FAILED", "count": 12 },
+      { "status": "EXPIRED", "count": 4 }
+    ],
+    "verificationsOverTime": [
+      { "date": "2026-10-08", "total": 24, "verified": 20, "failed": 4 }
+    ],
+    "challengeBreakdown": [
+      { "challenge": "SHOW_LEFT_HAND", "total": 45, "passed": 42, "failed": 3 }
+    ]
+  }
+  ```
+
+## 6. Database Schema & Index Specifications
+
+### Collection: `sessions`
+```javascript
 {
-  "sessionId": "uuid",
-  "name": "USER NAME",
-  "aadhaarNumber": "XXXX XXXX 1234",
-  "status": "PENDING",
-  "challenge": "",
-  "attempts": 0,
-  "createdAt": "date"
+  sessionId: { type: String, required: true, unique: true, index: true },
+  name: { type: String, default: "" },
+  aadhaarHash: { type: String, default: "", index: true },
+  aadhaarMasked: { type: String, default: "" },
+  aadhaarImagePath: { type: String, default: "" },
+  aadhaarFacePath: { type: String, default: "" },
+  selfieImagePath: { type: String, default: "" },
+  faceMatchScore: { type: Number, default: 0 },
+  challenge: { 
+    type: String, 
+    enum: ["SHOW_LEFT_HAND", "SHOW_RIGHT_HAND", "TURN_HEAD_LEFT", "TURN_HEAD_RIGHT", ""], 
+    default: "" 
+  },
+  attempts: { type: Number, default: 0 },
+  status: { 
+    type: String, 
+    enum: ["PENDING", "FACE_VERIFIED", "VERIFIED", "FAILED", "EXPIRED"], 
+    default: "PENDING",
+    index: true 
+  },
+  ipAddress: { type: String, default: "" },
+  userAgent: { type: String, default: "" },
+  createdAt: { type: Date, default: Date.now, index: true },
+  updatedAt: { type: Date, default: Date.now },
+  completedAt: { type: Date, default: null }
 }
 ```
 
-Failure cases:
-
-- session not found
-- session expired
-- server/database error
-
-### `POST /api/verify-face`
-
-Purpose:
-
-Compare the live selfie against the Aadhaar face.
-
-Request:
-
-```json
+### Collection: `auditevents`
+```javascript
 {
-  "sessionId": "uuid",
-  "selfie": "data:image/jpeg;base64,..."
+  sessionId: { type: String, required: true, index: true },
+  type: { 
+    type: String, 
+    required: true, 
+    enum: [
+      "SESSION_CREATED", 
+      "FACE_COMPARED", 
+      "CHALLENGE_ATTEMPTED", 
+      "SESSION_VERIFIED", 
+      "SESSION_FAILED", 
+      "SESSION_EXPIRED"
+    ],
+    index: true 
+  },
+  message: { type: String, default: "" },
+  meta: { type: mongoose.Schema.Types.Mixed, default: {} },
+  createdAt: { type: Date, default: Date.now, index: true }
 }
 ```
 
-Success response for pass:
+## 7. Security & Compliance Architecture
 
-```json
-{
-  "message": "Face Verification Passed!",
-  "status": "FACE_VERIFIED",
-  "faceMatchScore": 93,
-  "challenge": "SHOW_LEFT_HAND"
-}
-```
+1. **Aadhaar Privacy (Zero Plaintext Policy)**:
+   - Plaintext 12-digit Aadhaar numbers are never written to disk or database records.
+   - Distinct applicant detection uses salted cryptographic hashing: `crypto.createHash('sha256').update(PEPPER + ':' + digits).digest('hex')`.
+   - Display fields strictly enforce masking: `XXXX XXXX [last 4 digits]`.
 
-Success response for face failure:
+2. **Timing-Safe Admin Authentication**:
+   - The admin token is verified via `crypto.timingSafeEqual` comparing equalized buffer lengths, mitigating timing attack vectors.
 
-```json
-{
-  "message": "Face Verification Failed. Match score below threshold (80%).",
-  "status": "FAILED",
-  "faceMatchScore": 45
-}
-```
+3. **Rate Limiting**:
+   - `uploadLimiter`: 15 requests per 15 min per IP.
+   - `verificationLimiter`: 30 requests per 5 min per IP.
+   - `adminLimiter`: 200 requests per 5 min per IP.
 
-Failure cases:
+4. **Ephemeral Media Storage**:
+   - Biometric files are immediately deleted via `fs.unlinkSync` when a session transitions to `VERIFIED`, `FAILED`, or `EXPIRED`.
+   - Periodic cron worker removes abandoned session files older than 10 minutes.
 
-- missing session ID
-- missing selfie
-- invalid session
-- expired session
-- invalid session status
-- face comparison API error
+## 8. Build and Deployment Instructions
 
-### `POST /api/verify-challenge`
-
-Purpose:
-
-Submit liveness challenge result.
-
-Request for success:
-
-```json
-{
-  "sessionId": "uuid",
-  "image": "data:image/jpeg;base64,...",
-  "success": true
-}
-```
-
-Request for failure:
-
-```json
-{
-  "sessionId": "uuid",
-  "success": false
-}
-```
-
-Success response for verified:
-
-```json
-{
-  "message": "Verification Successful!",
-  "status": "VERIFIED",
-  "attempts": 1
-}
-```
-
-Response for retry:
-
-```json
-{
-  "message": "Challenge failed. 1 attempt remaining.",
-  "status": "FACE_VERIFIED",
-  "attempts": 1,
-  "retry": true,
-  "nextChallenge": "TURN_HEAD_LEFT"
-}
-```
-
-Response for final failure:
-
-```json
-{
-  "message": "Challenge failed. All attempts used.",
-  "status": "FAILED",
-  "attempts": 2,
-  "retry": false
-}
-```
-
-Failure cases:
-
-- missing session ID
-- missing success flag
-- invalid session
-- expired session
-- face verification not completed
-
-### `GET /api/result/:sessionId`
-
-Purpose:
-
-Fetch final verification result.
-
-Success response:
-
-```json
-{
-  "sessionId": "uuid",
-  "name": "USER NAME",
-  "aadhaarNumber": "XXXX XXXX 1234",
-  "status": "VERIFIED",
-  "faceMatchScore": 93,
-  "challenge": "SHOW_LEFT_HAND",
-  "attempts": 1,
-  "createdAt": "date",
-  "completedAt": "date"
-}
-```
-
-Failure cases:
-
-- session not found
-- server/database error
-
-### `GET /health`
-
-Purpose:
-
-Backend health check.
-
-Success response:
-
-```json
-{
-  "status": "OK",
-  "message": "KYC backend is running."
-}
-```
-
-## 6. Data Model
-
-### Session Schema
-
-```text
-sessionId: String, required, unique
-name: String
-aadhaarNumber: String
-aadhaarImagePath: String
-aadhaarFacePath: String
-selfieImagePath: String
-faceMatchScore: Number
-challenge: String
-attempts: Number
-status: String
-createdAt: Date
-completedAt: Date
-```
-
-Allowed challenge values:
-
-```text
-SHOW_LEFT_HAND
-SHOW_RIGHT_HAND
-TURN_HEAD_LEFT
-TURN_HEAD_RIGHT
-""
-```
-
-Allowed status values:
-
-```text
-PENDING
-FACE_VERIFIED
-VERIFIED
-FAILED
-EXPIRED
-```
-
-## 7. Session Lifecycle
-
-```text
-PENDING
-  -> FACE_VERIFIED when face score >= 80
-  -> FAILED when face score < 80
-  -> EXPIRED when older than 10 minutes
-
-FACE_VERIFIED
-  -> VERIFIED when liveness challenge passes
-  -> FACE_VERIFIED when first challenge attempt fails and retry is allowed
-  -> FAILED when second challenge attempt fails
-  -> EXPIRED when older than 10 minutes
-
-VERIFIED, FAILED, EXPIRED
-  -> terminal states
-```
-
-## 8. File Storage Requirements
-
-Upload directories:
-
-```text
-backend/uploads/aadhaar
-backend/uploads/selfies
-```
-
-Stored files:
-
-- original Aadhaar image
-- cropped Aadhaar face image
-- selfie image
-- optional challenge proof frame
-
-Cleanup requirements:
-
-- Delete files when session becomes `VERIFIED`.
-- Delete files when session becomes `FAILED`.
-- Delete files when session becomes `EXPIRED`.
-- Periodic cleanup job should run every 2 minutes.
-
-## 9. Validation Requirements
-
-### Upload Validation
-
-- Allowed extensions: `.jpg`, `.jpeg`, `.png`
-- Allowed MIME types: JPEG, JPG, PNG
-- Max file size: 5MB
-
-### Face Match Validation
-
-- Session must exist.
-- Session must not be expired.
-- Session status must be `PENDING`.
-- Selfie must be present.
-- Passing threshold is confidence score >= 80.
-
-### Challenge Validation
-
-- Session must exist.
-- Session must not be expired.
-- Session status must be `FACE_VERIFIED`.
-- `success` flag must be provided.
-- Maximum attempts: 2.
-
-## 10. Liveness Detection Requirements
-
-### Hand Challenge
-
-Used for:
-
-```text
-SHOW_LEFT_HAND
-SHOW_RIGHT_HAND
-```
-
-Implementation:
-
-- Use MediaPipe Hands.
-- Detect hand landmarks from webcam frames.
-- Read handedness classification.
-- Accept stable detection for consecutive frames.
-- Accept mirrored interpretation to reduce user frustration.
-
-### Head Turn Challenge
-
-Used for:
-
-```text
-TURN_HEAD_LEFT
-TURN_HEAD_RIGHT
-```
-
-Implementation:
-
-- Use MediaPipe Face Mesh.
-- Track nose and cheek landmarks.
-- Calculate horizontal ratio from landmarks.
-- Detect clear side rotation.
-- Require stable detection for consecutive frames.
-
-### Timer
-
-- Challenge duration: 20 seconds.
-- Timeout counts as failed attempt.
-- First timeout assigns a new challenge.
-- Second timeout fails the session.
-
-## 11. Rate Limiting Requirements
-
-Upload endpoint:
-
-```text
-15 requests per 15 minutes per IP
-```
-
-Verification endpoints:
-
-```text
-30 requests per 5 minutes per IP
-```
-
-Purpose:
-
-- Reduce abuse.
-- Prevent repeated brute-force verification attempts.
-- Protect API usage costs.
-
-## 12. Security Requirements
-
-- API keys must stay in backend environment variables.
-- Aadhaar number must be masked in frontend responses.
-- Uploaded media must not remain after terminal status.
-- CORS should be restricted in production.
-- HTTPS should be used in production.
-- Sensitive database fields should be encrypted in production.
-- Rate limiting must be applied to upload and verification endpoints.
-
-## 13. Error Handling Requirements
-
-Frontend must show readable errors for:
-
-- invalid file type
-- file too large
-- upload failure
-- invalid session
-- expired session
-- camera capture failure
-- face verification failure
-- challenge timeout
-- result fetch failure
-
-Backend must return clear errors for:
-
-- missing upload
-- invalid upload
-- OCR failure
-- face detection failure
-- missing request fields
-- invalid session status
-- expired session
-- external API failure
-
-## 14. Build and Run Requirements
-
-### Backend
-
+### Backend Setup
 ```bash
 cd backend
 npm install
 npm run dev
+# Optional PII migration script:
+npm run migrate:pii
 ```
 
-Default backend URL:
-
-```text
-http://localhost:5000
-```
-
-### Frontend
-
+### Frontend Setup
 ```bash
 cd frontend
 npm install
 npm run dev
+# Build production bundle:
+npm run build
 ```
-
-Default Vite URL:
-
-```text
-http://localhost:5173
-```
-
-## 15. Testing Requirements
-
-Recommended test scenarios:
-
-- Upload valid Aadhaar image.
-- Upload invalid file type.
-- Upload file larger than 5MB.
-- Create session in mock mode.
-- Open generated verification link.
-- Complete successful face match.
-- Complete successful liveness challenge.
-- Fail face match.
-- Fail first challenge and retry.
-- Fail second challenge and verify final `FAILED` status.
-- Wait past 10 minutes and verify expiry.
-- Confirm media files are cleaned after terminal status.
-
-## 16. Production Readiness Gaps
-
-The current system is a prototype. Before production, add:
-
-- authentication and authorization
-- HTTPS
-- restricted CORS
-- encrypted sensitive data
-- audit logs
-- structured logging
-- cloud file storage
-- malware scanning for uploaded files
-- stronger OCR validation
-- stronger spoof detection
-- queue-based background jobs
-- automated unit and integration tests
-- deployment pipeline

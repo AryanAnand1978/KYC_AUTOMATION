@@ -1,25 +1,28 @@
 # KYC Backend Documentation & Function Guide
 
-This document provides a comprehensive breakdown of the functions, schemas, routing, and overall wiring of the KYC Verification backend. It explains the mechanics of each file, how data flows, and where each method is integrated.
+This document provides a comprehensive architectural breakdown of the functions, database models, middleware guards, routing layers, and wiring of the KYC Verification backend. It covers both the **Applicant Verification Pipeline** and the **Admin Intelligence & Audit Logging Engine**.
 
 ---
 
 ## 🏗️ Architectural Overview & Wiring
 
-The KYC backend is structured as a standard MVC-like Node.js & Express application using MongoDB (via Mongoose) as the persistent store. It integrates with external services for optical character recognition (OCR) and facial recognition:
+The KYC backend is structured as an Express and Node.js application using MongoDB (via Mongoose) as the persistent store. It integrates with external services for optical character recognition (OCR) and facial recognition, while maintaining privacy-preserving records and an append-only audit trail:
+
 - **OCR Engine**: Extracts Aadhaar card data (Full Name and Aadhaar Number) using the [Google Gemini 2.5 Flash API](https://ai.google.dev/) (with fallback to the [Google Cloud Vision API](https://cloud.google.com/vision/) or a Mock Mode).
 - **Face Recognition Engine**: Automates face detection, cropping, and biometric comparison using the [Face++ APIs](https://www.faceplusplus.com/).
-- **Challenge Verification**: Executes client-side physical activity validation (e.g., hand gestures, head turns) using MediaPipe, and processes the outcome on the backend with automated retry loops.
+- **Challenge Verification**: Executes client-side physical activity validation using MediaPipe, and processes the outcome on the backend with automated retry loops.
+- **Privacy & PII Protection**: Hashes Aadhaar digits using salted SHA-256 (`sha256(PEPPER:digits)`) and masks output strings (`XXXX XXXX 1234`). Zero plaintext Aadhaar numbers are stored in MongoDB.
+- **Audit Logging Engine**: Records lifecycle milestones asynchronously into a dedicated `AuditEvent` collection via `auditService.logEvent()`.
+- **Admin Intelligence Layer**: Exposes protected administrative APIs guarded by constant-time bearer token validation (`adminAuth.js`), serving aggregation-driven metrics and audit histories.
 
 ### Data Flow & Wiring Diagram
 
-The diagram below details how the client request enters the API endpoints, triggers controllers, consumes external services, and modifies state in MongoDB.
-
 ```mermaid
 graph TD
-    Client["Client Browser / Frontend"]
+    Client["Applicant Browser"]
+    Admin["Admin / Compliance Dashboard"]
     
-    subgraph Routes["Routes & Controller Layer"]
+    subgraph PublicRoutes["Public KYC Layer (kycRoutes.js)"]
         R_Upload["POST /api/upload-aadhaar"]
         R_Session["GET /api/session/:sessionId"]
         R_VerifyFace["POST /api/verify-face"]
@@ -32,44 +35,58 @@ graph TD
         C_VerifyChallenge["kycController.verifyChallenge"]
         C_Result["kycController.getResult"]
     end
-    
-    subgraph Services["Services Layer"]
+
+    subgraph AdminRoutes["Admin Intelligence Layer (adminRoutes.js)"]
+        Auth_Guard["adminAuth (Timing-Safe Bearer Check)"]
+        R_AdminVerify["GET /api/admin/verify"]
+        R_AdminList["GET /api/admin/verifications"]
+        R_AdminDetail["GET /api/admin/verifications/:sessionId"]
+        R_AdminStats["GET /api/admin/stats"]
+
+        C_AdminVerify["adminController.verifyToken"]
+        C_AdminList["adminController.listVerifications"]
+        C_AdminDetail["adminController.getVerificationDetail"]
+        C_AdminStats["adminController.getStats (Aggregation)"]
+    end
+
+    subgraph Services["Services & Utilities"]
         S_OCR["ocrService.extractAadhaarData"]
         S_FaceDetect["faceService.detectAndCropFace"]
         S_FaceCompare["faceService.compareFaces"]
+        S_Audit["auditService.logEvent"]
     end
 
-    subgraph Storage["Storage & External APIs"]
-        DB[("MongoDB - Session Model")]
+    subgraph Storage["Persistent Storage & AI Cloud"]
+        DB_Sessions[("MongoDB: sessions")]
+        DB_Audit[("MongoDB: auditevents")]
         Gemini["Google Gemini 2.5 Flash / Vision API"]
         FacePP["Face++ Detect & Compare APIs"]
     end
 
     Client --> R_Upload
     R_Upload --> C_Upload
-    C_Upload --> S_OCR
-    C_Upload --> S_FaceDetect
-    S_OCR --> Gemini
-    S_FaceDetect --> FacePP
-    C_Upload --> DB
-    
-    Client --> R_Session
-    R_Session --> C_Session
-    C_Session --> DB
-    
-    Client --> R_VerifyFace
-    R_VerifyFace --> C_VerifyFace
-    C_VerifyFace --> S_FaceCompare
-    S_FaceCompare --> FacePP
-    C_VerifyFace --> DB
-    
-    Client --> R_VerifyChallenge
-    R_VerifyChallenge --> C_VerifyChallenge
-    C_VerifyChallenge --> DB
-    
-    Client --> R_Result
-    R_Result --> C_Result
-    C_Result --> DB
+    C_Upload --> S_OCR --> Gemini
+    C_Upload --> S_FaceDetect --> FacePP
+    C_Upload --> DB_Sessions
+    C_Upload --> S_Audit --> DB_Audit
+
+    Client --> R_Session --> C_Session --> DB_Sessions
+
+    Client --> R_VerifyFace --> C_VerifyFace
+    C_VerifyFace --> S_FaceCompare --> FacePP
+    C_VerifyFace --> DB_Sessions
+    C_VerifyFace --> S_Audit --> DB_Audit
+
+    Client --> R_VerifyChallenge --> C_VerifyChallenge --> DB_Sessions
+    C_VerifyChallenge --> S_Audit --> DB_Audit
+
+    Client --> R_Result --> C_Result --> DB_Sessions
+
+    Admin --> Auth_Guard
+    Auth_Guard --> R_AdminVerify --> C_AdminVerify
+    Auth_Guard --> R_AdminList --> C_AdminList --> DB_Sessions
+    Auth_Guard --> R_AdminDetail --> C_AdminDetail --> DB_Sessions & DB_Audit
+    Auth_Guard --> R_AdminStats --> C_AdminStats --> DB_Sessions & DB_Audit
 ```
 
 ---
@@ -80,216 +97,189 @@ graph TD
 
 ### 1. Main Entry Point: [server.js](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/server.js)
 
-This is the main driver of the application. It configures basic Middlewares (CORS, body parser JSON limits for base64 selfies), initiates the database connection, mounts API routing, handles upload folders initialization, and drives a periodic cleanup cron job.
+The application driver configuring middleware, database connectivity, routing mounts, upload folder scaffolding, and the periodic cleanup worker.
 
-#### ⚙️ Functions & Background Routines
+#### ⚙️ Mechanics & Mounted Endpoints
+- **Middleware**: CORS, JSON body parser with 10MB limit (for webcam selfie base64 payloads), URL-encoded parser, and static serving of `/uploads`.
+- **Database**: Boots MongoDB connection via `config/db.js`.
+- **Public Routes**: Mounts KYC endpoints under `/api` via `routes/kycRoutes.js`.
+- **Admin Routes**: Mounts protected administrative endpoints under `/api/admin` via `routes/adminRoutes.js`.
+- **Health Probe**: Exposes `GET /health` responding with `{ status: "OK", timestamp: "..." }`.
 
-##### A. [createUploadDirs](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/server.js#L38-L49)
-* **How it works**: Uses synchronous file system check (`fs.existsSync`) and directory creation (`fs.mkdirSync` with `{ recursive: true }`) to verify and create the folder structure needed for storing uploads. Specifically, it ensures `uploads`, `uploads/aadhaar`, and `uploads/selfies` folders are ready.
-* **Import/Export**: Declared locally. Executed immediately upon server start.
-* **Wiring**: Automatically called on line 50.
+#### ⚙️ Background Routines
+##### A. `createUploadDirs`
+- Synchronously ensures that directory paths `uploads`, `uploads/aadhaar`, and `uploads/selfies` exist on the file system before requests are accepted.
 
-##### B. [setInterval Session Cleanup Job](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/server.js#L53-L94)
-* **How it works**: Runs every 2 minutes. Queries the MongoDB `Session` collection for records whose status is `PENDING` or `FACE_VERIFIED` and whose creation time (`createdAt`) is older than 10 minutes (defined by `tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000)`). For each expired session:
-  1. Sets its status to `"EXPIRED"`.
-  2. Sets `completedAt` to the current time.
-  3. Saves the session back to MongoDB.
-  4. Deletes associated files on disk (`aadhaarImagePath`, `aadhaarFacePath`, `selfieImagePath`, and audit frame `challenge_[sessionId].jpg`) to maintain user privacy and release storage.
-* **Import/Export**: Inline async callback within Node.js native `setInterval`.
-* **Wiring**: Standard Node background process running continuously.
-
----
-
-### 2. Database Connection: [db.js](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/config/db.js)
-
-Handles connecting Mongoose to MongoDB.
-
-#### ⚙️ Functions
-
-##### A. [connectDB](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/config/db.js#L3-L13)
-* **How it works**: Async function that uses `mongoose.connect` to open a database connection using the URI specified in the environment variables (`process.env.MONGODB_URI`). If the variable is absent, it defaults to a local instance at `mongodb://127.0.0.1:27017/kyc-verification`. If connection fails, it writes the error message to the console and halts the application using `process.exit(1)`.
-* **Import/Export**: Exported as default module export.
-* **Wiring**: Imported on line 6 of [server.js](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/server.js#L6) and invoked on line 14.
+##### B. Session Expiry & Media Purge Interval
+- Runs every 2 minutes (`2 * 60 * 1000` ms).
+- Queries `Session` documents where status is `PENDING` or `FACE_VERIFIED` and `createdAt` is older than 10 minutes.
+- Transitions status to `EXPIRED`, sets `completedAt`, persists updates, and logs an `AuditEvent` of type `SESSION_EXPIRED`.
+- Deletes all associated biometric media on disk (`aadhaarImagePath`, `aadhaarFacePath`, `selfieImagePath`, and challenge frames).
 
 ---
 
-### 3. Session Model Schema: [Session.js](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/models/Session.js)
+### 2. Database Connection: [config/db.js](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/config/db.js)
 
-Defines the state structure of a KYC verification session stored in MongoDB.
-
-#### ⚙️ Instance Methods
-
-##### A. [isExpired](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/models/Session.js#L57-L62)
-* **How it works**: Evaluates whether the current instance has exceeded its active verification window (10 minutes). It immediately returns `true` if the status is already `"EXPIRED"`. Otherwise, it measures the delta between the current timestamp and `createdAt`. If it exceeds 10 minutes (`10 * 60 * 1000` milliseconds), it returns `true`.
-* **Import/Export**: Attached to the schema instance via `sessionSchema.methods.isExpired`.
-* **Wiring**: Imported implicitly with the `Session` model. Invoked within:
-  - [getSession](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/controllers/kycController.js#L124) in the controller.
-  - [verifyFace](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/controllers/kycController.js#L168) in the controller.
-  - [verifyChallenge](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/controllers/kycController.js#L250) in the controller.
+Establishes connection to MongoDB via Mongoose using `process.env.MONGODB_URI` with fallback to local `mongodb://127.0.0.1:27017/kyc-verification`. Exits process with failure code if unable to connect.
 
 ---
 
-### 4. Routing & Middleware Layer: [kycRoutes.js](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/routes/kycRoutes.js)
+### 3. Session Model Schema: [models/Session.js](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/models/Session.js)
 
-Manages request limits, local file storage parsing using Multer, schema format checks, and mapping endpoints to controller functions.
+Defines the core verification entity in MongoDB.
 
-#### ⚙️ Local Helper Functions & Middlewares
+#### Fields
+- `sessionId` (String, required, unique, indexed): Cryptographic UUID identifying the session.
+- `name` (String): Extracted cardholder name.
+- `aadhaarHash` (String, indexed): Salted SHA-256 hash `sha256(PEPPER:digits)` for unique applicant counting without plaintext PII.
+- `aadhaarMasked` (String): Display string `XXXX XXXX 1234`.
+- `aadhaarImagePath`, `aadhaarFacePath`, `selfieImagePath` (String): File system paths for temporary biometric media (purged on terminal status).
+- `faceMatchScore` (Number): Biometric confidence score (0-100).
+- `challenge` (String enum): Active challenge (`SHOW_LEFT_HAND`, `SHOW_RIGHT_HAND`, `TURN_HEAD_LEFT`, `TURN_HEAD_RIGHT`, or `""`).
+- `attempts` (Number): Number of challenge executions.
+- `status` (String enum, indexed): `PENDING`, `FACE_VERIFIED`, `VERIFIED`, `FAILED`, `EXPIRED`.
+- `ipAddress`, `userAgent` (String): Captured network client metadata.
+- `createdAt` (Date, indexed), `updatedAt` (Date), `completedAt` (Date).
 
-##### A. [fileFilter](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/routes/kycRoutes.js#L26-L36)
-* **How it works**: Restricts upload file formats for security. Evaluates both the file extension and the mime-type against a regular expression pattern `/jpeg|jpg|png/`. If they match, the upload continues by invoking `cb(null, true)`. Otherwise, it rejects the request with an error.
-* **Import/Export**: Passed to the `multer` configuration instance.
-* **Wiring**: Configured as part of the `upload` middleware initialization on line 38.
-
-##### B. Rate Limiters: [uploadLimiter](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/routes/kycRoutes.js#L45-L49) & [verificationLimiter](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/routes/kycRoutes.js#L51-L55)
-* **How it works**: Uses `express-rate-limit` to limit API abuse:
-  - `uploadLimiter`: Limits a single IP address to a maximum of 15 requests per 15-minute window (specifically for the `/upload-aadhaar` route).
-  - `verificationLimiter`: Limits a single IP to 30 requests per 5-minute window (applied on validation steps `/verify-face` and `/verify-challenge`).
-* **Wiring**: Placed as route-specific middleware functions in the route declarations.
-
-##### C. Multer Error Handler
-* **How it works**: Custom inline Express error-handling middleware (`(err, req, res, next) => { ... }`) that checks if an incoming error is an instance of `multer.MulterError` or a generic validation failure. Sends a client-friendly JSON response with status code `400` instead of letting the application crash or leaking directory stack-traces.
-* **Wiring**: Mounted on line 65 of [kycRoutes.js](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/routes/kycRoutes.js#L65).
-
----
-
-### 5. Controller Layer: [kycController.js](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/controllers/kycController.js)
-
-This file contains the core business logic. It handles HTTP requests, drives the session lifecycle state machine, coordinates file storage cleanup, and structures response formatting.
-
-#### ⚙️ Helper Functions (Local)
-
-##### A. [maskAadhaar](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/controllers/kycController.js#L9-L15)
-* **How it works**: Obfuscates sensitive Aadhaar card numbers for client-side display. It strips whitespaces, checks that the result contains at least 4 digits, extracts the last four digits, and prefixes them with masked characters: `XXXX XXXX [last 4 digits]`.
-* **Wiring**: Invoked during response serialization in [uploadAadhaar](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/controllers/kycController.js#L103), [getSession](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/controllers/kycController.js#L140), and [getResult](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/controllers/kycController.js#L346).
-
-##### B. [deleteFile](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/controllers/kycController.js#L18-L27)
-* **How it works**: Synchronously deletes a file at the specified system path using `fs.unlinkSync` if it exists (`fs.existsSync(filePath)`), wrapping the process in a `try/catch` block to handle exceptions.
-* **Wiring**: Called within [cleanupSessionMedia](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/controllers/kycController.js#L30) and the main controllers if APIs fail during execution.
-
-##### C. [cleanupSessionMedia](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/controllers/kycController.js#L30-L39)
-* **How it works**: Deletes all assets on disk related to a specific KYC session (the original Aadhaar card image, the cropped Aadhaar face snippet, the user's live verification selfie, and any challenge audit frames).
-* **Wiring**: Called inside:
-  - `getSession` (line 128) if the session has expired.
-  - `verifyFace` (line 220) if face matching fails (below 80%).
-  - `verifyChallenge` (line 283) if the session is successfully verified.
-  - `verifyChallenge` (line 316) if the user fails both challenge attempts.
-
-#### ⚙️ Controller Endpoints (Exported)
-
-##### A. [uploadAadhaar](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/controllers/kycController.js#L42-L111)
-* **How it works**: 
-  1. Validates that a file has been uploaded in `req.file` (populated by Multer).
-  2. Generates a fresh `sessionId` via `crypto.randomUUID()`.
-  3. Sends the original image to [extractAadhaarData](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/services/ocrService.js#L10) to parse text. If it fails, deletes the uploaded file and responds with a `500` error.
-  4. Sends the original image to [detectAndCropFace](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/services/faceService.js#L13) to crop the cardholder's face. If face detection fails (meaning no face is present on the card), deletes the uploaded card image and returns a `422 Unprocessable Entity` status.
-  5. If both steps succeed, initializes a session record in the database with status `"PENDING"`, saving the paths of the uploaded Aadhaar image and the cropped face.
-  6. Responds with `201 Created` status returning the session details (with masked Aadhaar) and the client redirection URL.
-
-##### B. [getSession](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/controllers/kycController.js#L114-L151)
-* **How it works**: Retrieves the status of a specific session.
-  1. Looks up the session via `Session.findOne({ sessionId })`.
-  2. Checks expiration via `session.isExpired()`. If expired and not in a finalized state (`EXPIRED`, `VERIFIED`, `FAILED`), updates the database status to `"EXPIRED"`, initiates file unlinking via `cleanupSessionMedia`, and returns a `400` status.
-  3. Otherwise, returns the masked session state.
-
-##### C. [verifyFace](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/controllers/kycController.js#L154-L233)
-* **How it works**: Handles biometric face verification.
-  1. Confirms the presence of `sessionId` and `selfie` (base64 image payload) in the body.
-  2. Verifies session exists, hasn't expired, and is in the `"PENDING"` state.
-  3. Converts the base64 selfie data into a binary buffer, saves it to `uploads/selfies/selfie_[sessionId].jpg`, and updates the session's image path.
-  4. Calls [compareFaces](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/services/faceService.js#L89) to match the cropped Aadhaar card face with the new selfie.
-  5. If the comparison score is **>= 80**: Sets status to `"FACE_VERIFIED"`, randomly picks a liveness challenge from `["SHOW_LEFT_HAND", "SHOW_RIGHT_HAND", "TURN_HEAD_LEFT", "TURN_HEAD_RIGHT"]`, assigns it to the session, and responds with success.
-  6. If the score is **< 80**: Rejects the comparison, sets the database status to `"FAILED"`, triggers immediate media deletion via `cleanupSessionMedia`, and returns a failure response.
-
-##### D. [verifyChallenge](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/controllers/kycController.js#L236-L331)
-* **How it works**: Updates and completes the session liveness test feedback.
-  1. Confirms session existence, expiration state, and validates that it has already passed face verification (`FACE_VERIFIED` status).
-  2. If the request body includes an `image` (base64 screen capture frame of the challenge execution), saves it to `uploads/selfies/challenge_[sessionId].jpg` for potential system auditing.
-  3. Increments the session's `attempts` counter by 1.
-  4. If `success` is `true`: Transitions the session to `"VERIFIED"`, sets `completedAt`, triggers `cleanupSessionMedia` to erase images immediately, and returns a verified status.
-  5. If `success` is `false`:
-     - **First Attempt Failed**: Randomly selects a *different* challenge, saves it as the active challenge, and returns a retry response.
-     - **Second Attempt Failed**: Session status is marked `"FAILED"`, files are deleted via `cleanupSessionMedia`, and a failure response is sent.
-
-##### E. [getResult](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/controllers/kycController.js#L334-L359)
-* **How it works**: Simple, non-destructive endpoint that returns the final KYC state for post-verification pages. It fetches the session by ID and returns its fields (with masked Aadhaar) to the UI without altering data or triggering expiration updates.
+#### Methods
+- `sessionSchema.methods.isExpired()`: Returns `true` if current status is `"EXPIRED"` or if elapsed time from `createdAt` exceeds 10 minutes.
 
 ---
 
-### 6. OCR Extraction Service: [ocrService.js](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/services/ocrService.js)
+### 4. Audit Event Model: [models/AuditEvent.js](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/models/AuditEvent.js)
 
-Connects to cloud APIs to extract text parameters from images.
+Defines the append-only audit trail collection `auditevents`.
 
-#### ⚙️ Functions
-
-##### A. [extractAadhaarData](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/services/ocrService.js#L10-L238)
-* **How it works**: Chooses an OCR execution flow based on environment keys:
-  
-  ###### Flow 1: Gemini Pro AI (Preferred)
-  * Runs if `process.env.GEMINI_API_KEY` is set.
-  * Encodes the image file to base64.
-  * POSTs a JSON payload containing the image buffer and a prompt to the Google Gemini 2.5 Flash API endpoint.
-  * Prompt: *"Analyze the attached Aadhaar card image and extract: 1) The cardholder's Full Name... 2) The 12-digit Aadhaar Number... Return ONLY a JSON object formatted as `{"name": "...", "aadhaarNumber": "..."}`."*
-  * Cleans markdown formatting backticks from the result, parses the raw string to JSON, and returns the variables.
-  
-  ###### Flow 2: Mock Mode (Testing)
-  * Runs if `process.env.MOCK_MODE` is `"true"` or keys are set to `"mock"`.
-  * Instantly returns a static successful OCR object (Name: `"AARAV SHARMA"`, Number: `"1234 5678 9012"`).
-  
-  ###### Flow 3: Google Cloud Vision API (Fallback)
-  * Runs if `process.env.GOOGLE_VISION_API_KEY` is present.
-  * Submits the base64 image payload to the Google Cloud Vision Text Detection API.
-  * Parses raw text strings from response annotations.
-  * Uses regular expressions to extract the 12-digit Aadhaar number pattern (`\b\d{4}\s\d{4}\s\d{4}\b`, etc.).
-  * Uses name-extraction heuristics: Splits text into lines, locates the Date of Birth (`DOB`) line, and scans upward to find uppercase strings containing letters and spaces. It ignores common keywords (e.g., `"GOVERNMENT OF INDIA"`, `"ENROLLMENT"`, `"MALE"`, `"FEMALE"`).
-* **Import/Export**: Exported module method.
-* **Wiring**: Imported on line 5 of [kycController.js](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/controllers/kycController.js#L5).
+#### Fields
+- `sessionId` (String, required, indexed): References parent verification session.
+- `type` (String enum, required, indexed):
+  - `SESSION_CREATED`
+  - `FACE_COMPARED`
+  - `CHALLENGE_ATTEMPTED`
+  - `SESSION_VERIFIED`
+  - `SESSION_FAILED`
+  - `SESSION_EXPIRED`
+- `message` (String): Human-readable operational description.
+- `meta` (Mixed Object): Contextual key-value metrics (e.g. `{ score: 92.5, passed: true }`, `{ challenge: "SHOW_LEFT_HAND", success: true }`, `{ reason: "..." }`).
+- `createdAt` (Date, default `Date.now`, indexed).
 
 ---
 
-### 7. Face Services: [faceService.js](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/services/faceService.js)
+### 5. Audit Logging Service: [services/auditService.js](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/services/auditService.js)
 
-Connects to Face++ to handle face detection, cropping, and biometric comparison.
-
-#### ⚙️ Functions
-
-##### A. [detectAndCropFace](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/services/faceService.js#L13-L83)
-* **How it works**: 
-  - **Mock Mode**: Uses the `Jimp` image processing library to crop the center 40% of the uploaded Aadhaar image, saving it directly to `outputFacePath`.
-  - **Live Mode**: 
-    1. Sends the Aadhaar image to the Face++ Detect API (`/facepp/v3/detect`) using `FormData`.
-    2. If no faces are found in the response, it throws an error.
-    3. If a face is found, it extracts the bounding box coordinates `{ top, left, width, height }`.
-    4. Reads the original image with `Jimp`, adds a 10% padding boundary around the face coordinates, crops the face segment, and writes it to `outputFacePath`.
-* **Import/Export**: Exported module method.
-* **Wiring**: Imported on line 6 of [kycController.js](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/controllers/kycController.js#L6) and called in `uploadAadhaar`.
-
-##### B. [compareFaces](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/services/faceService.js#L89-L124)
-* **How it works**:
-  - **Mock Mode**: Instantly returns a successful match score of `92.5`. However, if the path name of the selfie contains the word `"fail"`, it returns a score of `45.0` to allow testing failure states.
-  - **Live Mode**: POSTs both the cropped Aadhaar face snippet and the live selfie image as a multipart form data payload to the Face++ Compare API (`/facepp/v3/compare`). It returns the `confidence` score (0-100) returned by the API.
-* **Import/Export**: Exported module method.
-* **Wiring**: Imported on line 6 of [kycController.js](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/controllers/kycController.js#L6) and called in `verifyFace`.
+Exports the non-blocking logging helper:
+```javascript
+const logEvent = async (sessionId, type, message = '', meta = {}) => { ... }
+```
+- Creates and persists an `AuditEvent` document asynchronously.
+- Wraps execution in `try/catch` and suppresses failures to prevent audit storage hiccups from interrupting applicant verification workflows.
 
 ---
 
-### 8. Testing Utility: [test.js](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/test.js)
+### 6. Admin Authentication Guard: [middleware/adminAuth.js](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/middleware/adminAuth.js)
 
-A standalone script to test the Google Gemini API integration locally.
+Protects all administrative endpoints.
 
 #### ⚙️ Mechanics
-* **How it works**: A script that reads `sample_aadhaar.png` locally, base64 encodes it, and sends it directly to the Google Gemini 2.5 Flash API with a simple text prompt: `"Extract all text from this image."` It uses a hardcoded API key and prints the returned JSON result directly to the console.
-* **Wiring**: Standalone development tool. Not imported by other backend files.
+1. Inspects incoming `Authorization` HTTP header for standard `Bearer <token>` format.
+2. Compares incoming token with `process.env.ADMIN_TOKEN`.
+3. Validates length equality, then utilizes Node's cryptographic primitive `crypto.timingSafeEqual(Buffer.from(token), Buffer.from(expected))` to prevent timing attack side-channels.
+4. If invalid or missing, immediately halts request pipeline with `401 Unauthorized`.
+
+---
+
+### 7. Administrative Routing Layer: [routes/adminRoutes.js](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/routes/adminRoutes.js)
+
+Mounts administrative endpoints and applies rate limiting:
+- **Rate Limiter (`adminLimiter`)**: 200 requests per 5 minutes per IP.
+- **Middleware Guard**: Applied to all routes via `router.use(requireAdmin)`.
+- **Endpoints**:
+  - `GET /verify` -> `adminController.verifyToken`
+  - `GET /verifications` -> `adminController.listVerifications`
+  - `GET /verifications/:sessionId` -> `adminController.getVerificationDetail`
+  - `GET /stats` -> `adminController.getStats`
+
+---
+
+### 8. Administrative Controller: [controllers/adminController.js](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/controllers/adminController.js)
+
+Implements management, search, and analytics operations.
+
+#### ⚙️ Functions
+
+##### A. `verifyToken`
+- Confirms validity of admin token for frontend login validation. Returns `{ ok: true }`.
+
+##### B. `listVerifications`
+- Supports paginated, sorted, and filtered browsing of `Session` records:
+  - `q`: Regex search across applicant `name` or `aadhaarMasked`.
+  - `status`: Filters by allowed status enum (`PENDING`, `VERIFIED`, etc.).
+  - `from` & `to`: Creation date constraints.
+  - `sort`: `newest` (`createdAt: -1`), `oldest` (`createdAt: 1`), or `score` (`faceMatchScore: -1`).
+  - `page` & `limit`: Pagination parameters with lean query execution.
+
+##### C. `getVerificationDetail`
+- Fetches session by `sessionId`, exposing metadata (`ipAddress`, `userAgent`, `aadhaarHash`).
+- Concurrently queries `AuditEvent.find({ sessionId }).sort({ createdAt: 1 })` to return the complete chronological lifecycle timeline.
+
+##### D. `getStats`
+- High-performance analytics engine executing parallel MongoDB aggregation pipelines:
+  1. **Status Counts**: `$group` by `$status` calculating session volumes.
+  2. **Average Match Score**: `$match: { faceMatchScore: { $gt: 0 } }` with `$group: { avg: { $avg: '$faceMatchScore' } }`.
+  3. **Distinct Applicants**: `$group: { _id: '$aadhaarHash' }` with `$count: 'count'`.
+  4. **Today's Volume**: Counts sessions created since midnight.
+  5. **30-Day Volume Trends**: Groups by `$dateToString: { format: '%Y-%m-%d', date: '$createdAt' }` computing total, verified, and failed volumes.
+  6. **Challenge Performance Breakdown**: Aggregates `AuditEvent` entries of type `CHALLENGE_ATTEMPTED` grouped by `$meta.challenge` computing pass and fail ratios.
+
+---
+
+### 9. Public KYC Controller: [controllers/kycController.js](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/controllers/kycController.js)
+
+Manages applicant verification logic and lifecycle transitions.
+
+#### ⚙️ Key Methods
+- `maskAadhaar(aadhaarNumber)`: Formats 12 digits into `XXXX XXXX 1234`.
+- `hashAadhaar(aadhaarNumber)`: Computes salted SHA-256 digest with `AADHAAR_HASH_PEPPER`.
+- `cleanupSessionMedia(session)`: Unlinks files from `uploads/aadhaar` and `uploads/selfies`.
+- `uploadAadhaar`: Processes card upload, runs OCR, crops face, records IP/UserAgent, saves `Session`, emits `SESSION_CREATED`.
+- `getSession`: Validates session existence and 10-minute expiry window.
+- `verifyFace`: Decodes base64 selfie, calls Face++ Compare, verifies threshold (>= 80), assigns randomized challenge, emits `FACE_COMPARED`.
+- `verifyChallenge`: Evaluates liveness outcome, allows 1 retry on first failure, marks terminal status (`VERIFIED` or `FAILED`), cleans media, emits `CHALLENGE_ATTEMPTED` and `SESSION_VERIFIED` / `SESSION_FAILED`.
+- `getResult`: Non-destructive query returning masked results for post-verification review.
+
+---
+
+### 10. OCR & Face Services: [ocrService.js](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/services/ocrService.js) & [faceService.js](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/services/faceService.js)
+
+- **`ocrService.extractAadhaarData`**: Connects to Google Gemini 2.5 Flash API with fallback to Google Cloud Vision or deterministic Mock mode.
+- **`faceService.detectAndCropFace`**: Connects to Face++ Detect API, calculates bounding box with 10% padding, and crops face image using Jimp.
+- **`faceService.compareFaces`**: Connects to Face++ Compare API returning biometric match confidence (0-100).
+
+---
+
+### 11. PII Migration Utility: [scripts/migratePII.js](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/scripts/migratePII.js)
+
+Standalone migration script to inspect legacy `Session` documents lacking `aadhaarHash` or `aadhaarMasked` and backfill secured values.
 
 ---
 
 ## 🔌 API Wiring Details (Route to Controller Mapping)
 
-The API routing is wired in [kycRoutes.js](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/routes/kycRoutes.js) and mounted under the `/api` prefix in [server.js](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/server.js#L30):
+### Public Applicant Routes (`/api/*`)
 
-| Method | Endpoint | Rate Limiter | Upload Middleware | Controller Function | Description |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **POST** | `/api/upload-aadhaar` | `uploadLimiter` (15 req / 15 min) | Multer: single file (`aadhaar`) | [uploadAadhaar](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/controllers/kycController.js#L42) | Uploads Aadhaar card, runs OCR and face cropping, creates a DB session, and returns the session state. |
-| **GET** | `/api/session/:sessionId` | *None* | *None* | [getSession](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/controllers/kycController.js#L114) | Checks session status and expiration, returning masked session parameters to the client. |
-| **POST** | `/api/verify-face` | `verificationLimiter` (30 req / 5 min) | *None* | [verifyFace](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/controllers/kycController.js#L154) | Decodes the base64 selfie, compares it with the Aadhaar face, and generates a random liveness challenge if successful. |
-| **POST** | `/api/verify-challenge` | `verificationLimiter` (30 req / 5 min) | *None* | [verifyChallenge](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/controllers/kycController.js#L236) | Validates liveness challenge status. Completes verification on success, or triggers retry loops on failure. |
-| **GET** | `/api/result/:sessionId` | *None* | *None* | [getResult](file:///C:/Users/Aryan%20Anand/OneDrive/Desktop/KYC/backend/controllers/kycController.js#L334) | Fetches the final verification results (Aadhaar details, match scores, attempts, and completion timestamp). |
+| Method | Endpoint | Rate Limiter | Auth | Controller Function | Description |
+| :--- | :--- | :--- | :---: | :--- | :--- |
+| **POST** | `/api/upload-aadhaar` | 15 req / 15 min | None | `kycController.uploadAadhaar` | Uploads document, extracts OCR/face, creates session, logs `SESSION_CREATED`. |
+| **GET** | `/api/session/:sessionId` | None | None | `kycController.getSession` | Validates session status and 10-minute expiry window. |
+| **POST** | `/api/verify-face` | 30 req / 5 min | None | `kycController.verifyFace` | Compares live selfie with Aadhaar face, assigns random liveness challenge. |
+| **POST** | `/api/verify-challenge` | 30 req / 5 min | None | `kycController.verifyChallenge` | Validates challenge outcome, manages retry loops, purges media on completion. |
+| **GET** | `/api/result/:sessionId` | None | None | `kycController.getResult` | Non-destructive fetch of final verification results. |
+
+### Administrative Routes (`/api/admin/*`)
+
+| Method | Endpoint | Rate Limiter | Auth | Controller Function | Description |
+| :--- | :--- | :--- | :---: | :--- | :--- |
+| **GET** | `/api/admin/verify` | 200 req / 5 min | Bearer | `adminController.verifyToken` | Validates shared admin key during operator login. |
+| **GET** | `/api/admin/verifications` | 200 req / 5 min | Bearer | `adminController.listVerifications` | Returns paginated, searchable, sorted verification records. |
+| **GET** | `/api/admin/verifications/:sessionId` | 200 req / 5 min | Bearer | `adminController.getVerificationDetail` | Returns single verification record with full chronological audit event trail. |
+| **GET** | `/api/admin/stats` | 200 req / 5 min | Bearer | `adminController.getStats` | Aggregates system metrics, 30-day trends, status breakdowns, and challenge analytics. |
