@@ -31,20 +31,26 @@ function App() {
     <BrowserRouter>
       <div className="flex flex-col min-h-screen">
         {/* Navigation Header */}
-        <header className="sticky top-0 z-50 backdrop-blur-md bg-[#0b0f19]/70 border-b border-brand-darkBorder/50">
+        <header className="sticky top-0 z-50 backdrop-blur-md bg-[#181b24]/90 border-b border-[#2d3448]">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-            <Link to="/" className="flex items-center gap-2 group">
-              <div className="p-2 bg-gradient-to-br from-brand-cyan to-brand-blue rounded-lg text-brand-darkBg shadow-md shadow-brand-cyan/20">
-                <ShieldCheck className="w-6 h-6" />
+            <Link to="/" className="flex items-center gap-2.5 group">
+              <div className="p-2 bg-[#00E5A3]/15 border border-[#00E5A3]/30 rounded-xl text-[#00E5A3] group-hover:scale-105 transition-transform">
+                <ShieldCheck className="w-5 h-5" />
               </div>
-              <span className="font-extrabold text-xl tracking-tight bg-gradient-to-r from-white via-slate-100 to-slate-400 bg-clip-text text-transparent">
-                Identity<span className="text-brand-cyan">Shield</span>
-              </span>
+              <div className="flex flex-col">
+                <span className="font-extrabold text-base tracking-tight text-white leading-tight">
+                  Identity<span className="text-[#00E5A3]">Shield</span>
+                </span>
+                <span className="text-[9px] text-slate-400 font-semibold tracking-wider uppercase">
+                  Automated Verification Node
+                </span>
+              </div>
             </Link>
-            <div className="flex items-center gap-4">
-              <span className="text-xs font-semibold px-3 py-1 rounded-full bg-brand-cyan/10 text-brand-cyan border border-brand-cyan/20 animate-pulse-glow">
-                SECURE KYC NODE
-              </span>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-[#232836] border border-[#323a4e] text-xs">
+                <span className="w-2 h-2 rounded-full bg-[#00E5A3] inline-block shadow-sm shadow-[#00E5A3]"></span>
+                <span className="tracking-wider text-[10px] font-bold text-slate-200">NODE ONLINE</span>
+              </div>
             </div>
           </div>
         </header>

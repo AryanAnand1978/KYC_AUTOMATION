@@ -1,99 +1,89 @@
 @import "tailwindcss";
 
 @theme {
-  --color-brand-glow: #00F2FE;
-  --color-brand-cyan: #00F2FE;
-  --color-brand-blue: #4FACFE;
-  --color-brand-darkBg: #0b0f19;
-  --color-brand-darkCard: #151c2c;
-  --color-brand-darkBorder: #232d42;
+  --color-brand-mint: #00E5A3;
+  --color-brand-mint-hover: #00cca0;
+  --color-brand-darkBg: #181b24;
+  --color-brand-card: #232836;
+  --color-brand-card-elevated: #2a3142;
+  --color-brand-border: #323a4e;
 
-  --animate-pulse-glow: pulseGlow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-  --animate-fade-in: fadeIn 0.3s ease-out forwards;
-  --animate-slide-up: slideUp 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  --animate-fade-in: fadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  --animate-slide-up: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 
-  @keyframes pulseGlow {
-    0%, 100% { opacity: 0.5; box-shadow: 0 0 15px rgba(0, 242, 254, 0.3); }
-    50% { opacity: 1; box-shadow: 0 0 25px rgba(0, 242, 254, 0.6); }
-  }
   @keyframes fadeIn {
     0% { opacity: 0; }
     100% { opacity: 1; }
   }
   @keyframes slideUp {
-    0% { transform: translateY(15px); opacity: 0; }
+    0% { transform: translateY(10px); opacity: 0; }
     100% { transform: translateY(0); opacity: 1; }
   }
 }
 
 @utility glass-card {
-  @apply bg-brand-darkCard/80 backdrop-blur-md border border-brand-darkBorder/70 rounded-2xl shadow-xl transition-all duration-300;
+  @apply bg-[#232836] border border-[#323a4e]/70 rounded-2xl shadow-2xl shadow-black/30 transition-all duration-200;
 }
 
 @utility glass-card-hover {
-  @apply hover:border-brand-blue/50 hover:shadow-brand-blue/10 hover:shadow-2xl hover:translate-y-[-2px] transition-all duration-300;
+  @apply hover:border-slate-600 hover:shadow-2xl hover:translate-y-[-1px] transition-all duration-200;
 }
 
-@utility gradient-border {
-  position: relative;
-  border-radius: 1rem;
-  background: linear-gradient(135deg, #00F2FE 0%, #4FACFE 100%);
-  padding: 1px;
-}
-
-@utility gradient-border-content {
-  @apply bg-brand-darkCard rounded-[15px] h-full w-full p-6;
+@utility surface-white-card {
+  @apply bg-white text-slate-900 rounded-xl shadow-lg p-4 border border-slate-100 transition-all;
 }
 
 @utility btn-primary {
-  @apply relative overflow-hidden px-6 py-3 font-semibold rounded-xl text-brand-darkBg bg-gradient-to-r from-brand-cyan to-brand-blue hover:opacity-90 active:scale-[0.98] transition-all duration-200 shadow-lg shadow-brand-cyan/20 hover:shadow-brand-cyan/40 cursor-pointer;
+  @apply relative overflow-hidden px-6 py-3 font-bold text-xs uppercase tracking-wider rounded-xl text-[#0f172a] bg-[#00E5A3] hover:bg-[#00cca0] active:scale-[0.98] transition-all duration-150 shadow-lg shadow-[#00E5A3]/20 hover:shadow-[#00E5A3]/30 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none;
 }
 
 @utility btn-secondary {
-  @apply px-6 py-3 font-semibold rounded-xl border border-brand-darkBorder bg-brand-darkCard/50 text-slate-300 hover:bg-brand-darkBorder hover:text-white transition-all duration-200 active:scale-[0.98] cursor-pointer;
+  @apply px-6 py-3 font-semibold text-xs uppercase tracking-wider rounded-xl border border-[#363e52] bg-[#2a3142] text-slate-200 hover:bg-[#343c50] hover:text-white transition-all duration-150 active:scale-[0.98] cursor-pointer;
 }
 
 @utility badge-pending {
-  @apply bg-amber-500/10 text-amber-400 border border-amber-500/20 px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wider;
+  @apply bg-amber-500/15 text-amber-400 border border-amber-500/25 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider;
 }
 
 @utility badge-verified {
-  @apply bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wider;
+  @apply bg-[#00E5A3]/15 text-[#00E5A3] border border-[#00E5A3]/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider;
 }
 
 @utility badge-failed {
-  @apply bg-rose-500/10 text-rose-400 border border-rose-500/20 px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wider;
+  @apply bg-rose-500/15 text-rose-400 border border-rose-500/25 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider;
 }
 
 @utility badge-expired {
-  @apply bg-gray-500/10 text-gray-400 border border-gray-500/20 px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wider;
+  @apply bg-slate-500/15 text-slate-400 border border-slate-500/25 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider;
 }
 
 body {
-  @apply bg-brand-darkBg text-slate-100 font-sans selection:bg-brand-glow selection:text-brand-darkBg overflow-x-hidden;
+  @apply bg-[#181b24] text-slate-100 font-sans selection:bg-[#00E5A3] selection:text-slate-900 overflow-x-hidden antialiased;
   background-image: 
-    radial-gradient(at 0% 0%, rgba(79, 172, 254, 0.08) 0px, transparent 50%),
-    radial-gradient(at 100% 100%, rgba(0, 242, 254, 0.08) 0px, transparent 50%);
+    radial-gradient(circle at 50% 0%, rgba(35, 40, 54, 0.6) 0%, transparent 60%),
+    radial-gradient(circle at 100% 100%, rgba(24, 27, 36, 0.9) 0%, transparent 60%);
 }
 
 h1, h2, h3, h4, h5, h6 {
-  font-family: 'Outfit', sans-serif;
+  font-family: 'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  letter-spacing: -0.02em;
 }
 
 /* Custom Scrollbars */
 ::-webkit-scrollbar {
-  width: 8px;
+  width: 6px;
+  height: 6px;
 }
 
 ::-webkit-scrollbar-track {
-  background: #0b0f19;
+  background: #181b24;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #232d42;
-  border-radius: 4px;
+  background: #2a3142;
+  border-radius: 9999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #4FACFE;
+  background: #394258;
 }

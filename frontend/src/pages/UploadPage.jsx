@@ -106,13 +106,17 @@ const UploadPage = () => {
   };
 
   return (
-    <div className="w-full max-w-2xl mx-auto animate-fade-in">
+    <div className="w-full max-w-xl mx-auto animate-fade-in">
       <div className="text-center mb-8">
-        <h1 className="text-4xl font-extrabold tracking-tight text-white mb-2">
-          Verify Aadhaar Card
+        <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#00E5A3]/10 border border-[#00E5A3]/25 text-[#00E5A3] text-[10px] font-bold uppercase tracking-wider mb-3">
+          <ShieldCheck className="w-3.5 h-3.5" />
+          <span>IDENTITY INGESTION PIPELINE</span>
+        </div>
+        <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight text-white mb-2">
+          Verify Aadhaar Document
         </h1>
-        <p className="text-slate-400 text-sm max-w-md mx-auto">
-          Upload a clear photograph of the front-side of your Aadhaar card to initialize the automated KYC verification pipeline.
+        <p className="text-slate-400 text-xs sm:text-sm max-w-md mx-auto leading-relaxed">
+          Upload a clear photograph or scan of the front face of the government-issued card to start biometric authentication.
         </p>
       </div>
 
@@ -128,10 +132,10 @@ const UploadPage = () => {
               onDrop={handleDrop}
               className={`relative border-2 border-dashed rounded-xl p-8 text-center flex flex-col items-center justify-center cursor-pointer transition-all duration-200 min-h-[220px] ${
                 dragActive 
-                  ? 'border-brand-cyan bg-brand-cyan/5 scale-[1.01]' 
+                  ? 'border-[#00E5A3] bg-[#00E5A3]/5 scale-[1.01]' 
                   : file 
-                    ? 'border-emerald-500/50 bg-emerald-500/5' 
-                    : 'border-brand-darkBorder hover:border-brand-blue/50 hover:bg-brand-darkBorder/20'
+                    ? 'border-[#00E5A3]/50 bg-[#00E5A3]/5' 
+                    : 'border-[#323a4e] hover:border-[#00E5A3]/50 bg-[#1c202d] hover:bg-[#202534]'
               }`}
             >
               <input
@@ -145,28 +149,28 @@ const UploadPage = () => {
               <label htmlFor="file-upload" className="w-full cursor-pointer h-full flex flex-col items-center justify-center">
                 {file ? (
                   <>
-                    <div className="p-3 bg-emerald-500/20 text-emerald-400 rounded-full mb-3">
-                      <FileText className="w-8 h-8" />
+                    <div className="p-3 bg-[#00E5A3]/15 text-[#00E5A3] border border-[#00E5A3]/30 rounded-xl mb-3">
+                      <FileText className="w-7 h-7" />
                     </div>
-                    <span className="text-slate-200 font-semibold mb-1 block">
+                    <span className="text-slate-100 font-bold mb-1 block text-sm">
                       {file.name}
                     </span>
-                    <span className="text-xs text-slate-400">
+                    <span className="text-xs text-slate-400 font-mono">
                       {(file.size / (1024 * 1024)).toFixed(2)} MB • Ready for ingestion
                     </span>
                   </>
                 ) : (
                   <>
-                    <div className="p-3 bg-brand-cyan/10 text-brand-cyan rounded-full mb-3">
-                      <Upload className="w-8 h-8" />
+                    <div className="p-3.5 bg-[#00E5A3]/10 text-[#00E5A3] border border-[#00E5A3]/25 rounded-2xl mb-3 shadow-md shadow-[#00E5A3]/5">
+                      <Upload className="w-7 h-7" />
                     </div>
-                    <span className="text-slate-200 font-semibold mb-1 block">
-                      Drag & drop Aadhaar photo here
+                    <span className="text-slate-100 font-bold mb-1 block text-sm">
+                      Drop Aadhaar card photograph here
                     </span>
-                    <span className="text-xs text-slate-400 block mb-2">
-                      or click to browse local files
+                    <span className="text-xs text-slate-400 block mb-3">
+                      or click to select from local storage
                     </span>
-                    <span className="text-[10px] text-slate-500">
+                    <span className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider">
                       Supported extensions: JPG, JPEG, PNG (Max 5MB)
                     </span>
                   </>
@@ -178,87 +182,93 @@ const UploadPage = () => {
               <div className="p-4 bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-xl flex items-start gap-3 text-sm">
                 <AlertTriangle className="w-5 h-5 flex-shrink-0 mt-0.5" />
                 <div>
-                  <span className="font-semibold">Process Error: </span>
+                  <span className="font-semibold">Verification Alert: </span>
                   {error}
                 </div>
               </div>
             )}
 
             {/* Submit Button */}
-            <div className="flex justify-end">
-              <button
-                type="submit"
-                disabled={!file || loading}
-                className={`btn-primary w-full flex items-center justify-center gap-2 ${
-                  (!file || loading) ? 'opacity-50 cursor-not-allowed shadow-none' : ''
-                }`}
-              >
-                {loading ? (
-                  <div className="flex items-center gap-2">
-                    <svg className="animate-spin h-5 w-5 text-brand-darkBg" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                    </svg>
-                    <span>{loadingStep}</span>
-                  </div>
-                ) : (
-                  <>
-                    <span>Initialize KYC Session</span>
-                    <ArrowRight className="w-4 h-4" />
-                  </>
-                )}
-              </button>
-            </div>
+            <button
+              type="submit"
+              disabled={!file || loading}
+              className="btn-primary w-full flex items-center justify-center gap-2 py-3.5"
+            >
+              {loading ? (
+                <div className="flex items-center gap-2 text-slate-900">
+                  <svg className="animate-spin h-4 w-4 text-slate-900" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                  <span className="font-bold">{loadingStep || 'Processing Document...'}</span>
+                </div>
+              ) : (
+                <>
+                  <span>Initialize KYC Session</span>
+                  <ArrowRight className="w-4 h-4" />
+                </>
+              )}
+            </button>
 
           </form>
         </div>
       ) : (
-        /* Success Screen showing Generated Verification Link */
+        /* Success Screen showing Generated Verification Link with Pure White Cards */
         <div className="glass-card p-6 md:p-8 animate-slide-up space-y-6">
-          <div className="flex items-center gap-3 border-b border-brand-darkBorder/40 pb-4">
-            <div className="p-2 bg-emerald-500/20 text-emerald-400 rounded-lg">
-              <CheckCircle2 className="w-6 h-6" />
+          <div className="flex items-center justify-between border-b border-[#323a4e] pb-4">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 bg-[#00E5A3]/15 text-[#00E5A3] border border-[#00E5A3]/30 rounded-xl">
+                <CheckCircle2 className="w-6 h-6" />
+              </div>
+              <div>
+                <h2 className="text-base font-bold text-white leading-tight">Document Ingestion Complete</h2>
+                <p className="text-xs text-slate-400">OCR credentials mapped & biometric profile isolated</p>
+              </div>
             </div>
-            <div>
-              <h2 className="text-xl font-bold text-white">Ingestion Successful</h2>
-              <p className="text-xs text-slate-400">Biometrics and OCR keys mapped</p>
-            </div>
+            <span className="badge-verified">PARSED</span>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-brand-darkBg/60 p-4 rounded-xl border border-brand-darkBorder/50">
-            <div>
-              <span className="text-[10px] text-slate-500 uppercase font-semibold block">Parsed Name</span>
-              <span className="text-slate-200 font-bold text-sm tracking-wide">{sessionResult.extractedData.name}</span>
+          {/* Pure White Highlight Cards from reference design */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+            <div className="surface-white-card">
+              <span className="text-[10px] text-slate-400 uppercase font-bold tracking-wider block mb-1">Applicant Name</span>
+              <span className="text-slate-900 font-extrabold text-base tracking-tight block">{sessionResult.extractedData.name || 'N/A'}</span>
+              <span className="text-[11px] text-[#00cca0] font-semibold flex items-center gap-1 mt-1">
+                <ShieldCheck className="w-3.5 h-3.5" /> Name Verified
+              </span>
             </div>
-            <div>
-              <span className="text-[10px] text-slate-500 uppercase font-semibold block">Aadhaar Number</span>
-              <span className="text-slate-200 font-bold text-sm tracking-widest">{sessionResult.extractedData.aadhaarNumber}</span>
+            
+            <div className="surface-white-card">
+              <span className="text-[10px] text-slate-400 uppercase font-bold tracking-wider block mb-1">Aadhaar Identifier</span>
+              <span className="text-slate-900 font-mono font-bold text-base tracking-wider block">{sessionResult.extractedData.aadhaarNumber || 'N/A'}</span>
+              <span className="text-[11px] text-slate-500 font-medium block mt-1">12-Digit Government ID</span>
             </div>
           </div>
 
           <div className="space-y-2">
-            <span className="text-xs font-semibold text-slate-400 block">Verification Session URL</span>
-            <div className="flex items-center gap-2 bg-[#080b12] border border-brand-darkBorder rounded-xl p-2.5">
-              <span className="text-xs text-brand-cyan truncate flex-grow px-2 font-mono select-all">
+            <span className="text-xs font-bold uppercase tracking-wider text-slate-300 block">Biometric Session URL</span>
+            <div className="flex items-center gap-2 bg-[#1c202d] border border-[#323a4e] rounded-xl p-2.5">
+              <span className="text-xs text-[#00E5A3] truncate flex-grow px-2 font-mono select-all">
                 {`${window.location.origin}${sessionResult.verificationLink}`}
               </span>
               <button
+                type="button"
                 onClick={copyToClipboard}
-                className="p-2 text-slate-400 hover:text-white hover:bg-brand-darkBorder rounded-lg transition-colors flex-shrink-0"
+                className="px-3 py-1.5 text-slate-300 hover:text-white bg-[#2a3142] hover:bg-[#343c50] border border-[#363e52] rounded-lg transition-colors flex items-center gap-1.5 text-xs font-bold cursor-pointer"
                 title="Copy Link"
               >
-                {copied ? <span className="text-xs text-emerald-400 font-semibold px-1">Copied!</span> : <Copy className="w-4 h-4" />}
+                {copied ? <span className="text-[#00E5A3]">Copied!</span> : <><Copy className="w-3.5 h-3.5" /><span>Copy</span></>}
               </button>
             </div>
-            <p className="text-[10px] text-slate-500">
-              * The verification URL is valid for 10 minutes. Files are automatically destroyed after verification.
+            <p className="text-[11px] text-slate-400 leading-normal">
+              Session expires in 10 minutes. Biometric verification requires active webcam access.
             </p>
           </div>
 
           <div className="pt-2">
             <a
               href={sessionResult.verificationLink}
-              className="btn-primary w-full flex items-center justify-center gap-2 group"
+              className="btn-primary w-full flex items-center justify-center gap-2 group py-3.5"
             >
               <span>Launch Verification Terminal</span>
               <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
