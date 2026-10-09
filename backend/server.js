@@ -73,14 +73,22 @@ setInterval(async () => {
       console.log(`[Expiry Job] Found ${expiredSessions.length} expired session(s). Initializing cleanup...`);
       
       for (const session of expiredSessions) {
-        session.status = "EXPIRED";
-        session.completedAt = new Date();
-        await session.save();
+        // Atomic conditional transition: only expire if status is still PENDING or FACE_VERIFIED
+        const updated = await Session.findOneAndUpdate(
+          { _id: session._id, status: { $in: ["PENDING", "FACE_VERIFIED"] } },
+          { $set: { status: "EXPIRED", completedAt: new Date() } },
+          { new: true }
+        );
+
+        if (!updated) {
+          // Concurrently verified or failed by an active request
+          continue;
+        }
 
         await logEvent(session.sessionId, 'SESSION_EXPIRED', 'Session expired by the background cleanup job.');
 
         // Reuse the shared media-cleanup helper (also records MEDIA_CLEANED).
-        await cleanupSessionMedia(session);
+        await cleanupSessionMedia(updated);
 
         console.log(`[Expiry Job] Cleaned up media and expired session: ${session.sessionId}`);
       }

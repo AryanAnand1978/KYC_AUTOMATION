@@ -240,9 +240,33 @@ const verifyFace = async (req, res) => {
       const challenges = ["SHOW_LEFT_HAND", "SHOW_RIGHT_HAND", "TURN_HEAD_LEFT", "TURN_HEAD_RIGHT"];
       const randomChallenge = challenges[Math.floor(Math.random() * challenges.length)];
 
-      session.challenge = randomChallenge;
-      session.status = "FACE_VERIFIED";
-      await session.save();
+      if (req.body.useLegacy) {
+        // LEGACY (check-then-save, vulnerable to race conditions)
+        session.challenge = randomChallenge;
+        session.status = "FACE_VERIFIED";
+        await session.save();
+      } else {
+        // ATOMIC CONDITIONAL UPDATE: only update if status is still PENDING
+        const updated = await Session.findOneAndUpdate(
+          { sessionId, status: 'PENDING' },
+          {
+            $set: {
+              status: "FACE_VERIFIED",
+              challenge: randomChallenge,
+              faceMatchScore: session.faceMatchScore,
+              selfieImagePath: selfieImagePath
+            }
+          },
+          { new: true }
+        );
+
+        if (!updated) {
+          deleteFile(selfieImagePath);
+          return res.status(409).json({
+            error: "Conflict: Session state was modified concurrently or is no longer PENDING."
+          });
+        }
+      }
 
       await logEvent(session.sessionId, 'FACE_PASSED', 'Face match passed the 80% threshold.', {
         score: session.faceMatchScore
@@ -258,10 +282,34 @@ const verifyFace = async (req, res) => {
         challenge: randomChallenge
       });
     } else {
-      // Fail Session & Cleanup files instantly
-      session.status = "FAILED";
-      session.completedAt = new Date();
-      await session.save();
+      // Fail Session & Cleanup files
+      if (req.body.useLegacy) {
+        // LEGACY (check-then-save)
+        session.status = "FAILED";
+        session.completedAt = new Date();
+        await session.save();
+      } else {
+        // ATOMIC CONDITIONAL UPDATE: only update if status is still PENDING
+        const updated = await Session.findOneAndUpdate(
+          { sessionId, status: 'PENDING' },
+          {
+            $set: {
+              status: "FAILED",
+              completedAt: new Date(),
+              faceMatchScore: session.faceMatchScore,
+              selfieImagePath: selfieImagePath
+            }
+          },
+          { new: true }
+        );
+
+        if (!updated) {
+          deleteFile(selfieImagePath);
+          return res.status(409).json({
+            error: "Conflict: Session state was modified concurrently or is no longer PENDING."
+          });
+        }
+      }
 
       await logEvent(session.sessionId, 'FACE_FAILED', 'Face match fell below the 80% threshold.', {
         score: session.faceMatchScore
@@ -297,13 +345,17 @@ const verifyChallenge = async (req, res) => {
       return res.status(404).json({ error: "Verification session not found." });
     }
 
-    // Check expiration
+    // Check expiration atomically
     if (session.isExpired()) {
-      session.status = 'EXPIRED';
-      session.completedAt = new Date();
-      await session.save();
-      await logEvent(session.sessionId, 'SESSION_EXPIRED', 'Session expired after the 10-minute limit.');
-      await cleanupSessionMedia(session);
+      const expiredSession = await Session.findOneAndUpdate(
+        { sessionId, status: { $in: ['PENDING', 'FACE_VERIFIED'] } },
+        { $set: { status: 'EXPIRED', completedAt: new Date() } },
+        { new: true }
+      );
+      if (expiredSession) {
+        await logEvent(session.sessionId, 'SESSION_EXPIRED', 'Session expired after the 10-minute limit.');
+        await cleanupSessionMedia(session);
+      }
       return res.status(400).json({ error: "Session has expired.", status: "EXPIRED" });
     }
 
@@ -323,57 +375,137 @@ const verifyChallenge = async (req, res) => {
       }
     }
 
-    // Capture which challenge was being attempted before any reassignment.
     const attemptedChallenge = session.challenge;
 
-    // Increment attempts count
-    session.attempts += 1;
+    // Support legacy check-then-save branch for demonstration/benchmarking
+    if (req.body.useLegacy) {
+      session.attempts += 1;
+      await logEvent(session.sessionId, 'CHALLENGE_ATTEMPTED', `Liveness challenge attempted: ${attemptedChallenge || 'unknown'}.`, {
+        challenge: attemptedChallenge,
+        attempt: session.attempts,
+        success: !!success
+      });
 
-    await logEvent(session.sessionId, 'CHALLENGE_ATTEMPTED', `Liveness challenge attempted: ${attemptedChallenge || 'unknown'}.`, {
-      challenge: attemptedChallenge,
-      attempt: session.attempts,
-      success: !!success
-    });
+      if (success) {
+        // Small async pause simulating thread concurrency window
+        await new Promise(r => setTimeout(r, 40));
+        session.status = "VERIFIED";
+        session.completedAt = new Date();
+        await session.save();
 
+        await logEvent(session.sessionId, 'CHALLENGE_PASSED', 'Liveness challenge passed.', {
+          challenge: attemptedChallenge,
+          attempt: session.attempts
+        });
+        await logEvent(session.sessionId, 'SESSION_VERIFIED', 'Session fully verified.', {
+          attempts: session.attempts,
+          faceMatchScore: session.faceMatchScore
+        });
+
+        await cleanupSessionMedia(session);
+
+        return res.status(200).json({
+          message: "Verification Successful!",
+          status: "VERIFIED",
+          attempts: session.attempts
+        });
+      } else {
+        if (session.attempts < 2) {
+          const challenges = ["SHOW_LEFT_HAND", "SHOW_RIGHT_HAND", "TURN_HEAD_LEFT", "TURN_HEAD_RIGHT"];
+          const remainingChallenges = challenges.filter(c => c !== session.challenge);
+          const newChallenge = remainingChallenges[Math.floor(Math.random() * remainingChallenges.length)];
+          session.challenge = newChallenge;
+          await session.save();
+
+          return res.status(200).json({
+            message: "Challenge failed. 1 attempt remaining.",
+            status: "FACE_VERIFIED",
+            attempts: session.attempts,
+            retry: true,
+            nextChallenge: newChallenge
+          });
+        } else {
+          session.status = "FAILED";
+          session.completedAt = new Date();
+          await session.save();
+          await cleanupSessionMedia(session);
+
+          return res.status(200).json({
+            message: "Challenge failed. All attempts used.",
+            status: "FAILED",
+            attempts: session.attempts,
+            retry: false
+          });
+        }
+      }
+    }
+
+    // ATOMIC CONDITIONAL UPDATE (Fixed logic)
     if (success) {
-      // Challenge passed! Session is now fully VERIFIED
-      session.status = "VERIFIED";
-      session.completedAt = new Date();
-      await session.save();
+      const updated = await Session.findOneAndUpdate(
+        { sessionId, status: 'FACE_VERIFIED' },
+        {
+          $inc: { attempts: 1 },
+          $set: {
+            status: "VERIFIED",
+            completedAt: new Date()
+          }
+        },
+        { new: true }
+      );
 
+      if (!updated) {
+        return res.status(409).json({
+          error: "Conflict: Session state was modified concurrently or is no longer in FACE_VERIFIED state."
+        });
+      }
+
+      await logEvent(session.sessionId, 'CHALLENGE_ATTEMPTED', `Liveness challenge attempted: ${attemptedChallenge || 'unknown'}.`, {
+        challenge: attemptedChallenge,
+        attempt: updated.attempts,
+        success: true
+      });
       await logEvent(session.sessionId, 'CHALLENGE_PASSED', 'Liveness challenge passed.', {
         challenge: attemptedChallenge,
-        attempt: session.attempts
+        attempt: updated.attempts
       });
       await logEvent(session.sessionId, 'SESSION_VERIFIED', 'Session fully verified.', {
-        attempts: session.attempts,
-        faceMatchScore: session.faceMatchScore
+        attempts: updated.attempts,
+        faceMatchScore: updated.faceMatchScore
       });
 
-      // Clean up files now that the verification is completed!
-      await cleanupSessionMedia(session);
+      await cleanupSessionMedia(updated);
 
       return res.status(200).json({
         message: "Verification Successful!",
         status: "VERIFIED",
-        attempts: session.attempts
+        attempts: updated.attempts
       });
     } else {
       // Challenge failed in this attempt
-      if (session.attempts < 2) {
-        // Attempt 1 Failure -> Choose a NEW random challenge for retry
-        const challenges = ["SHOW_LEFT_HAND", "SHOW_RIGHT_HAND", "TURN_HEAD_LEFT", "TURN_HEAD_RIGHT"];
-        // Pick a different challenge if possible
-        const remainingChallenges = challenges.filter(c => c !== session.challenge);
-        const newChallenge = remainingChallenges[Math.floor(Math.random() * remainingChallenges.length)];
+      const challenges = ["SHOW_LEFT_HAND", "SHOW_RIGHT_HAND", "TURN_HEAD_LEFT", "TURN_HEAD_RIGHT"];
+      const remainingChallenges = challenges.filter(c => c !== session.challenge);
+      const newChallenge = remainingChallenges[Math.floor(Math.random() * remainingChallenges.length)];
 
-        session.challenge = newChallenge;
-        // Keep status as FACE_VERIFIED, wait for retry
-        await session.save();
+      // Attempt 1 Failure conditional update (attempts: 0 -> 1)
+      const attempt1Updated = await Session.findOneAndUpdate(
+        { sessionId, status: 'FACE_VERIFIED', attempts: 0 },
+        {
+          $inc: { attempts: 1 },
+          $set: { challenge: newChallenge }
+        },
+        { new: true }
+      );
 
+      if (attempt1Updated) {
+        await logEvent(session.sessionId, 'CHALLENGE_ATTEMPTED', `Liveness challenge attempted: ${attemptedChallenge || 'unknown'}.`, {
+          challenge: attemptedChallenge,
+          attempt: attempt1Updated.attempts,
+          success: false
+        });
         await logEvent(session.sessionId, 'CHALLENGE_FAILED', 'Liveness challenge failed; one attempt remaining.', {
           challenge: attemptedChallenge,
-          attempt: session.attempts
+          attempt: attempt1Updated.attempts
         });
         await logEvent(session.sessionId, 'CHALLENGE_ASSIGNED', `New liveness challenge assigned for retry: ${newChallenge}.`, {
           challenge: newChallenge
@@ -382,33 +514,53 @@ const verifyChallenge = async (req, res) => {
         return res.status(200).json({
           message: "Challenge failed. 1 attempt remaining.",
           status: "FACE_VERIFIED",
-          attempts: session.attempts,
+          attempts: attempt1Updated.attempts,
           retry: true,
           nextChallenge: newChallenge
         });
-      } else {
-        // Attempt 2 Failure -> Mark session as FAILED & cleanup files
-        session.status = "FAILED";
-        session.completedAt = new Date();
-        await session.save();
+      }
 
+      // Attempt 2 Failure conditional update (attempts >= 1 -> terminal FAILED)
+      const attempt2Updated = await Session.findOneAndUpdate(
+        { sessionId, status: 'FACE_VERIFIED', attempts: { $gte: 1 } },
+        {
+          $inc: { attempts: 1 },
+          $set: {
+            status: "FAILED",
+            completedAt: new Date()
+          }
+        },
+        { new: true }
+      );
+
+      if (attempt2Updated) {
+        await logEvent(session.sessionId, 'CHALLENGE_ATTEMPTED', `Liveness challenge attempted: ${attemptedChallenge || 'unknown'}.`, {
+          challenge: attemptedChallenge,
+          attempt: attempt2Updated.attempts,
+          success: false
+        });
         await logEvent(session.sessionId, 'CHALLENGE_FAILED', 'Liveness challenge failed; no attempts remaining.', {
           challenge: attemptedChallenge,
-          attempt: session.attempts
+          attempt: attempt2Updated.attempts
         });
         await logEvent(session.sessionId, 'SESSION_FAILED', 'Session failed after exhausting challenge attempts.', {
-          attempts: session.attempts
+          attempts: attempt2Updated.attempts
         });
 
-        await cleanupSessionMedia(session);
+        await cleanupSessionMedia(attempt2Updated);
 
         return res.status(200).json({
           message: "Challenge failed. All attempts used.",
           status: "FAILED",
-          attempts: session.attempts,
+          attempts: attempt2Updated.attempts,
           retry: false
         });
       }
+
+      // Neither matched: session already transitioned or conflict
+      return res.status(409).json({
+        error: "Conflict: Session state was modified concurrently or is no longer in FACE_VERIFIED state."
+      });
     }
 
   } catch (error) {
