@@ -53,8 +53,8 @@ async function run() {
   const collection = mongoose.connection.collection('sessions');
 
   if (args.includes('--clean')) {
-    console.log('[Seed] Cleaning existing seeded benchmark documents...');
-    const delRes = await collection.deleteMany({ seeded: true });
+    console.log('[Seed] Cleaning existing benchmark documents...');
+    const delRes = await collection.deleteMany({});
     console.log(`[Seed] Deleted ${delRes.deletedCount} benchmark documents.`);
     await mongoose.disconnect();
     process.exit(0);

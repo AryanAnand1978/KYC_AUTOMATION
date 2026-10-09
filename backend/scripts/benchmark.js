@@ -1,15 +1,22 @@
 /**
  * benchmark.js - Benchmarks query performance with explain('executionStats')
  *
- * Compares query execution metrics WITHOUT vs WITH indexes:
- *   1. Status + Date Range Filter + Sort by createdAt
- *   2. Name Search: Unanchored Regex (COLLSCAN) vs Prefix-Anchored Regex (IXSCAN)
- *   3. Sort by faceMatchScore (In-Memory Sort vs Indexed B-Tree Traversal)
+ * Compares query execution metrics across:
+ *   1. Status + Date Range Filter + Sort by createdAt:
+ *      - Scenario A: No Index (Natural COLLSCAN) via .hint({ $natural: 1 })
+ *      - Scenario B: Single-Field Index { createdAt: 1 } via .hint({ createdAt: 1 })
+ *      - Scenario C: Compound Index { status: 1, createdAt: 1 } via .hint({ status: 1, createdAt: 1 })
+ *   2. Name Search:
+ *      - Scenario A: Unanchored Regex (.*Aarav.*) via .hint({ $natural: 1 }) [COLLSCAN]
+ *      - Scenario B: Case-sensitive Prefix Regex (^aarav) on { nameLower: 1 } [IXSCAN]
+ *   3. Sort by faceMatchScore:
+ *      - Scenario A: No Index (In-Memory Sort) via .hint({ $natural: 1 }) [COLLSCAN]
+ *      - Scenario B: Indexed B-Tree Traversal { faceMatchScore: -1 } [IXSCAN]
  *
  * Outputs:
  *   - Console summary table
- *   - backend/benchmark-results.json
- *   - backend/benchmark-results.csv
+ *   - backend/benchmark-results.json (contains `size` column/property)
+ *   - backend/benchmark-results.csv  (contains `Size` column)
  *
  * Usage:
  *   node scripts/benchmark.js
@@ -34,7 +41,8 @@ function extractPrimaryStage(plan) {
     return plan.stage;
   }
   if (plan.inputStage) {
-    return extractPrimaryStage(plan.inputStage);
+    const sub = extractPrimaryStage(plan.inputStage);
+    if (sub !== 'UNKNOWN') return sub;
   }
   if (plan.inputStages && plan.inputStages.length > 0) {
     for (const sub of plan.inputStages) {
@@ -66,18 +74,24 @@ async function runBenchmark() {
   const collection = mongoose.connection.collection('sessions');
 
   const count = await collection.countDocuments();
-  console.log(`\n===============================================================`);
-  console.log(` DATABASE QUERY OPTIMIZATION BENCHMARK`);
-  console.log(` Target Collection: sessions (${count.toLocaleString()} documents)`);
-  console.log(`===============================================================\n`);
+  console.log(`\n========================================================================================`);
+  console.log(` DATABASE QUERY OPTIMIZATION BENCHMARK (Dataset Size: ${count.toLocaleString()} docs)`);
+  console.log(` Target Collection: sessions in kyc-benchmark`);
+  console.log(`========================================================================================\n`);
 
   if (count === 0) {
-    console.warn('⚠️  Collection is empty! Please run: node scripts/seedBenchmark.js 10000 first.');
+    console.warn('⚠️  Collection is empty! Please run: node scripts/seedBenchmark.js [N] first.');
     await mongoose.disconnect();
     process.exit(1);
   }
 
-  const results = [];
+  // Ensure necessary indexes exist before testing hinted queries
+  await collection.createIndex({ createdAt: 1 });
+  await collection.createIndex({ status: 1, createdAt: 1 });
+  await collection.createIndex({ nameLower: 1 });
+  await collection.createIndex({ faceMatchScore: -1 });
+
+  const currentRunResults = [];
   const now = Date.now();
   const sixtyDaysAgo = new Date(now - 60 * 24 * 60 * 60 * 1000);
   const thirtyDaysAgo = new Date(now - 30 * 24 * 60 * 60 * 1000);
@@ -89,53 +103,60 @@ async function runBenchmark() {
   const q1Filter = { status: 'VERIFIED', createdAt: { $gte: sixtyDaysAgo, $lte: thirtyDaysAgo } };
   const q1Sort = { createdAt: -1 };
 
-  // Drop compound index if present
-  try { await collection.dropIndex('status_1_createdAt_1'); } catch (e) {}
+  // 1A: No index baseline (True natural scan COLLSCAN)
+  const q1NoIndex = await collection.find(q1Filter).sort(q1Sort).hint({ $natural: 1 }).explain('executionStats');
+  const q1StatsNoIndex = parseStats(q1NoIndex);
 
-  const q1Without = await collection.find(q1Filter).sort(q1Sort).explain('executionStats');
-  const q1StatsWithout = parseStats(q1Without);
+  // 1B: Single-field index
+  const q1Single = await collection.find(q1Filter).sort(q1Sort).hint({ createdAt: 1 }).explain('executionStats');
+  const q1StatsSingle = parseStats(q1Single);
 
-  // Create compound index
-  await collection.createIndex({ status: 1, createdAt: 1 });
+  // 1C: Compound index
+  const q1Compound = await collection.find(q1Filter).sort(q1Sort).hint({ status: 1, createdAt: 1 }).explain('executionStats');
+  const q1StatsCompound = parseStats(q1Compound);
 
-  const q1With = await collection.find(q1Filter).sort(q1Sort).explain('executionStats');
-  const q1StatsWith = parseStats(q1With);
-
-  results.push({
+  currentRunResults.push({
+    size: count,
     query: 'Status + Date Range + Sort',
-    scenario: 'WITHOUT Index',
-    ...q1StatsWithout
+    scenario: 'No Index (Natural COLLSCAN)',
+    ...q1StatsNoIndex
   });
-  results.push({
+  currentRunResults.push({
+    size: count,
     query: 'Status + Date Range + Sort',
-    scenario: 'WITH Index {status:1, createdAt:1}',
-    ...q1StatsWith
+    scenario: 'Single-Field Index {createdAt: 1}',
+    ...q1StatsSingle
+  });
+  currentRunResults.push({
+    size: count,
+    query: 'Status + Date Range + Sort',
+    scenario: 'Compound Index {status: 1, createdAt: 1}',
+    ...q1StatsCompound
   });
 
   // --------------------------------------------------------------------------
-  // BENCHMARK 2: Name Search (Unanchored Regex vs Prefix-Anchored Regex)
+  // BENCHMARK 2: Name Search (Unanchored Regex vs Case-Sensitive Prefix Regex)
   // --------------------------------------------------------------------------
-  console.log('[Query 2] Name Search: Unanchored Regex (.*Aarav.*) vs Prefix Regex (^Aarav)');
-  
-  // Ensure index on name
-  await collection.createIndex({ name: 1 });
+  console.log('[Query 2] Name Search: Unanchored Regex (.*Aarav.*) vs Prefix Regex (^aarav)');
 
-  // 2A: Unanchored regex (cannot use B-Tree index efficiently -> COLLSCAN)
-  const q2Unanchored = await collection.find({ name: new RegExp('Aarav', 'i') }).explain('executionStats');
+  // 2A: Unanchored regex (Natural scan COLLSCAN baseline)
+  const q2Unanchored = await collection.find({ name: /Aarav/i }).hint({ $natural: 1 }).explain('executionStats');
   const q2StatsUnanchored = parseStats(q2Unanchored);
 
-  // 2B: Prefix-anchored regex (uses B-Tree index -> IXSCAN)
-  const q2Prefix = await collection.find({ name: new RegExp('^Aarav', 'i') }).explain('executionStats');
+  // 2B: Prefix regex on lowercased field (Index range scan IXSCAN)
+  const q2Prefix = await collection.find({ nameLower: /^aarav/ }).hint({ nameLower: 1 }).explain('executionStats');
   const q2StatsPrefix = parseStats(q2Prefix);
 
-  results.push({
+  currentRunResults.push({
+    size: count,
     query: 'Name Search (Regex)',
-    scenario: 'Unanchored (.*Aarav.*)',
+    scenario: 'Unanchored (.*Aarav.*) [COLLSCAN]',
     ...q2StatsUnanchored
   });
-  results.push({
+  currentRunResults.push({
+    size: count,
     query: 'Name Search (Regex)',
-    scenario: 'Prefix (^Aarav) with {name:1}',
+    scenario: 'Prefix (^aarav) with {nameLower: 1}',
     ...q2StatsPrefix
   });
 
@@ -146,80 +167,88 @@ async function runBenchmark() {
   const q3Filter = { faceMatchScore: { $gte: 75 } };
   const q3Sort = { faceMatchScore: -1 };
 
-  // Drop score index if present
-  try { await collection.dropIndex('faceMatchScore_-1'); } catch (e) {}
+  // 3A: Without index (Natural COLLSCAN + In-memory SORT)
+  const q3NoIndex = await collection.find(q3Filter).sort(q3Sort).hint({ $natural: 1 }).explain('executionStats');
+  const q3StatsNoIndex = parseStats(q3NoIndex);
 
-  const q3Without = await collection.find(q3Filter).sort(q3Sort).explain('executionStats');
-  const q3StatsWithout = parseStats(q3Without);
+  // 3B: With index (Index order IXSCAN)
+  const q3WithIndex = await collection.find(q3Filter).sort(q3Sort).hint({ faceMatchScore: -1 }).explain('executionStats');
+  const q3StatsWithIndex = parseStats(q3WithIndex);
 
-  // Create score index
-  await collection.createIndex({ faceMatchScore: -1 });
-
-  const q3With = await collection.find(q3Filter).sort(q3Sort).explain('executionStats');
-  const q3StatsWith = parseStats(q3With);
-
-  results.push({
+  currentRunResults.push({
+    size: count,
     query: 'Sort by faceMatchScore',
-    scenario: 'WITHOUT Index',
-    ...q3StatsWithout
+    scenario: 'No Index (In-Memory Sort)',
+    ...q3StatsNoIndex
   });
-  results.push({
+  currentRunResults.push({
+    size: count,
     query: 'Sort by faceMatchScore',
-    scenario: 'WITH Index {faceMatchScore:-1}',
-    ...q3StatsWith
+    scenario: 'WITH Index {faceMatchScore: -1}',
+    ...q3StatsWithIndex
   });
-
-  // --------------------------------------------------------------------------
-  // Ensure all standard indexes are present
-  // --------------------------------------------------------------------------
-  await collection.createIndex({ status: 1, createdAt: 1 });
-  await collection.createIndex({ faceMatchScore: -1 });
-  await collection.createIndex({ name: 1 });
-  await collection.createIndex({ aadhaarMasked: 1 });
 
   // --------------------------------------------------------------------------
   // PRINT SUMMARY TABLE
   // --------------------------------------------------------------------------
-  console.log('\n========================================================================================================');
+  console.log('\n====================================================================================================================');
   console.log(
-    'Query'.padEnd(28) +
-    'Scenario'.padEnd(32) +
+    'Size'.padEnd(10) +
+    'Query'.padEnd(30) +
+    'Scenario'.padEnd(42) +
     'Stage'.padEnd(10) +
     'Keys Examined'.padEnd(16) +
     'Docs Examined'.padEnd(16) +
-    'Execution Time'
+    'Time (ms)'
   );
-  console.log('--------------------------------------------------------------------------------------------------------');
+  console.log('--------------------------------------------------------------------------------------------------------------------');
 
-  for (const r of results) {
+  for (const r of currentRunResults) {
     console.log(
-      r.query.padEnd(28) +
-      r.scenario.padEnd(32) +
+      String(r.size).padEnd(10) +
+      r.query.padEnd(30) +
+      r.scenario.padEnd(42) +
       r.stage.padEnd(10) +
       String(r.totalKeysExamined).padEnd(16) +
       String(r.totalDocsExamined).padEnd(16) +
       `${r.executionTimeMillis} ms`
     );
   }
-  console.log('========================================================================================================\n');
+  console.log('====================================================================================================================\n');
 
   // --------------------------------------------------------------------------
-  // SAVE RESULTS TO JSON & CSV
+  // MERGE & SAVE RESULTS TO JSON & CSV
   // --------------------------------------------------------------------------
   const outDir = path.join(__dirname, '..');
   const jsonPath = path.join(outDir, 'benchmark-results.json');
   const csvPath = path.join(outDir, 'benchmark-results.csv');
 
+  let allResults = [];
+  if (fs.existsSync(jsonPath)) {
+    try {
+      const existing = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+      if (Array.isArray(existing.results)) {
+        // Filter out prior run for this specific size to avoid duplication
+        allResults = existing.results.filter(r => r.size !== count);
+      }
+    } catch (e) {
+      allResults = [];
+    }
+  }
+
+  allResults = [...allResults, ...currentRunResults];
+  // Sort allResults by size ascending, then query
+  allResults.sort((a, b) => (a.size - b.size) || a.query.localeCompare(b.query));
+
   const jsonContent = JSON.stringify({
-    timestamp: new Date().toISOString(),
-    totalDocuments: count,
-    results
+    lastUpdated: new Date().toISOString(),
+    results: allResults
   }, null, 2);
   fs.writeFileSync(jsonPath, jsonContent);
 
   const csvRows = [
-    'Query,Scenario,Stage,TotalKeysExamined,TotalDocsExamined,NReturned,ExecutionTimeMillis',
-    ...results.map(r => `"${r.query}","${r.scenario}",${r.stage},${r.totalKeysExamined},${r.totalDocsExamined},${r.nReturned},${r.executionTimeMillis}`)
+    'Size,Query,Scenario,Stage,TotalKeysExamined,TotalDocsExamined,NReturned,ExecutionTimeMillis',
+    ...allResults.map(r => `${r.size},"${r.query}","${r.scenario}",${r.stage},${r.totalKeysExamined},${r.totalDocsExamined},${r.nReturned},${r.executionTimeMillis}`)
   ];
   fs.writeFileSync(csvPath, csvRows.join('\n'));
 
@@ -227,7 +256,6 @@ async function runBenchmark() {
   console.log(`✅ Saved benchmark CSV to:  ${csvPath}`);
 
   await mongoose.disconnect();
-  process.exit(0);
 }
 
 runBenchmark().catch(err => {

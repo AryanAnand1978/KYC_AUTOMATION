@@ -1,7 +1,22 @@
-Query,Scenario,Stage,TotalKeysExamined,TotalDocsExamined,NReturned,ExecutionTimeMillis
-"Status + Date Range + Sort","WITHOUT Index",IXSCAN,3303,3303,674,7
-"Status + Date Range + Sort","WITH Index {status:1, createdAt:1}",IXSCAN,674,674,674,2
-"Name Search (Regex)","Unanchored (.*Aarav.*)",IXSCAN,10053,405,405,11
-"Name Search (Regex)","Prefix (^Aarav) with {name:1}",IXSCAN,10053,405,405,9
-"Sort by faceMatchScore","WITHOUT Index",COLLSCAN,0,10053,4554,13
-"Sort by faceMatchScore","WITH Index {faceMatchScore:-1}",IXSCAN,4554,4554,4554,7
+Size,Query,Scenario,Stage,TotalKeysExamined,TotalDocsExamined,NReturned,ExecutionTimeMillis
+10000,"Status + Date Range + Sort","No Index (Natural COLLSCAN)",COLLSCAN,0,10000,659,12
+10000,"Status + Date Range + Sort","Single-Field Index {createdAt: 1}",IXSCAN,3358,3358,659,10
+10000,"Status + Date Range + Sort","Compound Index {status: 1, createdAt: 1}",IXSCAN,659,659,659,2
+10000,"Name Search (Regex)","Unanchored (.*Aarav.*) [COLLSCAN]",COLLSCAN,0,10000,383,11
+10000,"Name Search (Regex)","Prefix (^aarav) with {nameLower: 1}",IXSCAN,384,383,383,1
+10000,"Sort by faceMatchScore","No Index (In-Memory Sort)",COLLSCAN,0,10000,4532,15
+10000,"Sort by faceMatchScore","WITH Index {faceMatchScore: -1}",IXSCAN,4532,4532,4532,9
+100000,"Status + Date Range + Sort","No Index (Natural COLLSCAN)",COLLSCAN,0,100000,6645,102
+100000,"Status + Date Range + Sort","Single-Field Index {createdAt: 1}",IXSCAN,33165,33165,6645,101
+100000,"Status + Date Range + Sort","Compound Index {status: 1, createdAt: 1}",IXSCAN,6645,6645,6645,25
+100000,"Name Search (Regex)","Unanchored (.*Aarav.*) [COLLSCAN]",COLLSCAN,0,100000,4041,97
+100000,"Name Search (Regex)","Prefix (^aarav) with {nameLower: 1}",IXSCAN,4042,4041,4041,9
+100000,"Sort by faceMatchScore","No Index (In-Memory Sort)",COLLSCAN,0,100000,45733,134
+100000,"Sort by faceMatchScore","WITH Index {faceMatchScore: -1}",IXSCAN,45733,45733,45733,85
+500000,"Status + Date Range + Sort","No Index (Natural COLLSCAN)",COLLSCAN,0,500000,33449,500
+500000,"Status + Date Range + Sort","Single-Field Index {createdAt: 1}",IXSCAN,166378,166378,33449,540
+500000,"Status + Date Range + Sort","Compound Index {status: 1, createdAt: 1}",IXSCAN,33449,33449,33449,87
+500000,"Name Search (Regex)","Unanchored (.*Aarav.*) [COLLSCAN]",COLLSCAN,0,500000,20132,433
+500000,"Name Search (Regex)","Prefix (^aarav) with {nameLower: 1}",IXSCAN,20133,20132,20132,49
+500000,"Sort by faceMatchScore","No Index (In-Memory Sort)",COLLSCAN,0,124314,0,146
+500000,"Sort by faceMatchScore","WITH Index {faceMatchScore: -1}",IXSCAN,227797,227797,227797,425
