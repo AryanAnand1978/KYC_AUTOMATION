@@ -1,5 +1,6 @@
 const Session = require('../models/Session');
 const AuditEvent = require('../models/AuditEvent');
+const { computeEventHash } = require('../services/auditService');
 
 const VALID_STATUSES = ['PENDING', 'FACE_VERIFIED', 'VERIFIED', 'FAILED', 'EXPIRED'];
 
@@ -205,9 +206,86 @@ const getStats = async (req, res) => {
   }
 };
 
+// 4. Verify cryptographic hash chain integrity for a verification session
+const verifyAuditChain = async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+
+    const events = await AuditEvent.find({ sessionId })
+      .sort({ sequence: 1 })
+      .lean();
+
+    if (!events.length) {
+      return res.status(200).json({
+        ok: true,
+        total: 0,
+        brokenAtSequence: null,
+        reason: null,
+        message: "No audit events found for this session."
+      });
+    }
+
+    for (let i = 0; i < events.length; i++) {
+      const event = events[i];
+
+      // 1. Verify sequence continuity (no sequence gaps or duplicates)
+      if (event.sequence !== i) {
+        return res.status(200).json({
+          ok: false,
+          total: events.length,
+          brokenAtSequence: event.sequence,
+          reason: "sequence gap"
+        });
+      }
+
+      // 2. Verify prevHash link
+      const expectedPrevHash = (i === 0) ? 'GENESIS' : events[i - 1].hash;
+      if (event.prevHash !== expectedPrevHash) {
+        return res.status(200).json({
+          ok: false,
+          total: events.length,
+          brokenAtSequence: event.sequence,
+          reason: "prevHash mismatch"
+        });
+      }
+
+      // 3. Re-calculate and verify cryptographic hash
+      const expectedHash = computeEventHash(
+        event.prevHash,
+        event.sessionId,
+        event.sequence,
+        event.type,
+        event.message,
+        event.meta,
+        event.createdAt
+      );
+
+      if (event.hash !== expectedHash) {
+        return res.status(200).json({
+          ok: false,
+          total: events.length,
+          brokenAtSequence: event.sequence,
+          reason: "hash mismatch"
+        });
+      }
+    }
+
+    return res.status(200).json({
+      ok: true,
+      total: events.length,
+      brokenAtSequence: null,
+      reason: null
+    });
+  } catch (error) {
+    console.error('verifyAuditChain Error:', error);
+    return res.status(500).json({ error: `Internal Server Error: ${error.message}` });
+  }
+};
+
 module.exports = {
   verifyToken,
   listVerifications,
   getVerificationDetail,
-  getStats
+  getStats,
+  verifyAuditChain
 };

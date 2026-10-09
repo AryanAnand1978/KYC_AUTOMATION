@@ -22,12 +22,25 @@ const AUDIT_EVENT_TYPES = [
 ];
 
 const auditEventSchema = new mongoose.Schema({
-  // Links to Session.sessionId (not an ObjectId ref, so events survive
-  // independently and are cheap to query by session).
+  // Links to Session.sessionId
   sessionId: {
     type: String,
-    required: true,
-    index: true
+    required: true
+  },
+  // Monotonically increasing sequence number per session (0, 1, 2, ...)
+  sequence: {
+    type: Number,
+    required: true
+  },
+  // Cryptographic hash of the previous event in the chain ('GENESIS' for sequence 0)
+  prevHash: {
+    type: String,
+    required: true
+  },
+  // SHA-256 digest of prevHash + event content + deterministic timestamp
+  hash: {
+    type: String,
+    required: true
   },
   type: {
     type: String,
@@ -42,16 +55,40 @@ const auditEventSchema = new mongoose.Schema({
   meta: {
     type: mongoose.Schema.Types.Mixed,
     default: {}
+  },
+  // Explicitly stored creation timestamp used in hash calculation
+  createdAt: {
+    type: Date,
+    default: Date.now,
+    required: true
   }
 }, {
-  timestamps: true
+  // Do not allow automatic timestamp overwrite since createdAt is hashed
+  timestamps: false
 });
+
+// Enforce unique monotonic sequence per session
+auditEventSchema.index({ sessionId: 1, sequence: 1 }, { unique: true });
 
 // Timeline lookups for a single session.
 auditEventSchema.index({ sessionId: 1, createdAt: 1 });
 // Aggregations grouped by event type / over time.
 auditEventSchema.index({ type: 1 });
 auditEventSchema.index({ createdAt: 1 });
+
+// Application-level immutability enforcement: block modifications and deletions
+const blockMutation = function(next) {
+  const err = new Error('IMMUTABLE_AUDIT_LOG: AuditEvent records are append-only and cannot be updated, replaced, or deleted.');
+  if (typeof next === 'function') return next(err);
+  throw err;
+};
+
+auditEventSchema.pre('updateOne', blockMutation);
+auditEventSchema.pre('updateMany', blockMutation);
+auditEventSchema.pre('findOneAndUpdate', blockMutation);
+auditEventSchema.pre('replaceOne', blockMutation);
+auditEventSchema.pre('deleteOne', blockMutation);
+auditEventSchema.pre('deleteMany', blockMutation);
 
 const AuditEvent = mongoose.model('AuditEvent', auditEventSchema);
 AuditEvent.TYPES = AUDIT_EVENT_TYPES;

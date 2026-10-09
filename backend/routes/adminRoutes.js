@@ -18,6 +18,7 @@ router.use(requireAdmin);
 
 router.get('/verify', adminController.verifyToken);
 router.get('/verifications', adminController.listVerifications);
+router.get('/verifications/:sessionId/verify-audit', adminController.verifyAuditChain);
 router.get('/verifications/:sessionId', adminController.getVerificationDetail);
 router.get('/stats', adminController.getStats);
 
