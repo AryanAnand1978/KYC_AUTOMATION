@@ -1,7 +1,9 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const mongoose = require('mongoose');
 const Session = require('../models/Session');
+const connectDB = require('../config/db');
 const ocrService = require('../services/ocrService');
 const faceService = require('../services/faceService');
 const { logEvent } = require('../services/auditService');
@@ -38,8 +40,9 @@ const deleteFile = (filePath) => {
   }
 };
 
-// Helper to clean up all media files for a session
+// Helper to clean up all media files for a session (idempotent)
 const cleanupSessionMedia = async (session) => {
+  if (!session) return;
   console.log(`Cleaning up media for session: ${session.sessionId}`);
   deleteFile(session.aadhaarImagePath);
   deleteFile(session.aadhaarFacePath);
@@ -48,6 +51,24 @@ const cleanupSessionMedia = async (session) => {
   // Also delete any potential challenge verification frame
   const challengeFramePath = path.join(__dirname, '..', 'uploads', 'selfies', `challenge_${session.sessionId}.jpg`);
   deleteFile(challengeFramePath);
+
+  // Clear path fields in database to ensure idempotency and prevent duplicate deletion
+  if (session.aadhaarImagePath || session.aadhaarFacePath || session.selfieImagePath) {
+    try {
+      await Session.updateOne(
+        { _id: session._id },
+        {
+          $set: {
+            aadhaarImagePath: '',
+            aadhaarFacePath: '',
+            selfieImagePath: ''
+          }
+        }
+      );
+    } catch (dbErr) {
+      console.error('Failed to clear file path fields in session document:', dbErr.message);
+    }
+  }
 
   await logEvent(session.sessionId, 'MEDIA_CLEANED', 'Biometric media files removed from disk.');
 };
@@ -108,18 +129,39 @@ const uploadAadhaar = async (req, res) => {
       userAgent: req.get('user-agent') || ''
     });
 
-    await session.save();
+    const isReplica = await connectDB.isReplicaSet();
 
-    // Record the lifecycle so the verification is fully auditable.
-    await logEvent(sessionId, 'SESSION_CREATED', 'Verification session created from Aadhaar upload.', {
-      ipAddress: req.ip,
-      userAgent: req.get('user-agent') || ''
-    });
-    await logEvent(sessionId, 'OCR_EXTRACTED', 'Identity fields extracted from Aadhaar via OCR.', {
-      name: session.name,
-      aadhaarMasked
-    });
-    await logEvent(sessionId, 'FACE_CROPPED', 'Face region detected and cropped from Aadhaar image.');
+    if (isReplica) {
+      const dbSession = await mongoose.startSession();
+      try {
+        await dbSession.withTransaction(async () => {
+          await session.save({ session: dbSession });
+          await logEvent(sessionId, 'SESSION_CREATED', 'Verification session created from Aadhaar upload.', {
+            ipAddress: req.ip,
+            userAgent: req.get('user-agent') || ''
+          }, dbSession);
+          await logEvent(sessionId, 'OCR_EXTRACTED', 'Identity fields extracted from Aadhaar via OCR.', {
+            name: session.name,
+            aadhaarMasked
+          }, dbSession);
+          await logEvent(sessionId, 'FACE_CROPPED', 'Face region detected and cropped from Aadhaar image.', {}, dbSession);
+        });
+      } finally {
+        await dbSession.endSession();
+      }
+    } else {
+      console.warn('⚠️ [Transaction Fallback]: Executing non-transactional write because MongoDB is not a Replica Set.');
+      await session.save();
+      await logEvent(sessionId, 'SESSION_CREATED', 'Verification session created from Aadhaar upload.', {
+        ipAddress: req.ip,
+        userAgent: req.get('user-agent') || ''
+      });
+      await logEvent(sessionId, 'OCR_EXTRACTED', 'Identity fields extracted from Aadhaar via OCR.', {
+        name: session.name,
+        aadhaarMasked
+      });
+      await logEvent(sessionId, 'FACE_CROPPED', 'Face region detected and cropped from Aadhaar image.');
+    }
 
     // Relative verification link; the frontend resolves it against its own origin.
     const verificationLink = `/verify/${sessionId}`;
@@ -440,40 +482,91 @@ const verifyChallenge = async (req, res) => {
       }
     }
 
-    // ATOMIC CONDITIONAL UPDATE (Fixed logic)
+    // ATOMIC CONDITIONAL UPDATE + TRANSACTION (Fixed logic)
     if (success) {
-      const updated = await Session.findOneAndUpdate(
-        { sessionId, status: 'FACE_VERIFIED' },
-        {
-          $inc: { attempts: 1 },
-          $set: {
-            status: "VERIFIED",
-            completedAt: new Date()
-          }
-        },
-        { new: true }
-      );
+      let updated;
+      const isReplica = await connectDB.isReplicaSet();
 
-      if (!updated) {
-        return res.status(409).json({
-          error: "Conflict: Session state was modified concurrently or is no longer in FACE_VERIFIED state."
+      if (isReplica) {
+        const dbSession = await mongoose.startSession();
+        try {
+          await dbSession.withTransaction(async () => {
+            updated = await Session.findOneAndUpdate(
+              { sessionId, status: 'FACE_VERIFIED' },
+              {
+                $inc: { attempts: 1 },
+                $set: {
+                  status: "VERIFIED",
+                  completedAt: new Date()
+                }
+              },
+              { new: true, session: dbSession }
+            );
+
+            if (!updated) {
+              throw new Error('CONCURRENCY_CONFLICT');
+            }
+
+            await logEvent(session.sessionId, 'CHALLENGE_ATTEMPTED', `Liveness challenge attempted: ${attemptedChallenge || 'unknown'}.`, {
+              challenge: attemptedChallenge,
+              attempt: updated.attempts,
+              success: true
+            }, dbSession);
+            await logEvent(session.sessionId, 'CHALLENGE_PASSED', 'Liveness challenge passed.', {
+              challenge: attemptedChallenge,
+              attempt: updated.attempts
+            }, dbSession);
+            await logEvent(session.sessionId, 'SESSION_VERIFIED', 'Session fully verified.', {
+              attempts: updated.attempts,
+              faceMatchScore: updated.faceMatchScore
+            }, dbSession);
+          });
+        } catch (txErr) {
+          if (txErr.message === 'CONCURRENCY_CONFLICT') {
+            return res.status(409).json({
+              error: "Conflict: Session state was modified concurrently or is no longer in FACE_VERIFIED state."
+            });
+          }
+          throw txErr;
+        } finally {
+          await dbSession.endSession();
+        }
+      } else {
+        // Fallback for standalone MongoDB
+        updated = await Session.findOneAndUpdate(
+          { sessionId, status: 'FACE_VERIFIED' },
+          {
+            $inc: { attempts: 1 },
+            $set: {
+              status: "VERIFIED",
+              completedAt: new Date()
+            }
+          },
+          { new: true }
+        );
+
+        if (!updated) {
+          return res.status(409).json({
+            error: "Conflict: Session state was modified concurrently or is no longer in FACE_VERIFIED state."
+          });
+        }
+
+        await logEvent(session.sessionId, 'CHALLENGE_ATTEMPTED', `Liveness challenge attempted: ${attemptedChallenge || 'unknown'}.`, {
+          challenge: attemptedChallenge,
+          attempt: updated.attempts,
+          success: true
+        });
+        await logEvent(session.sessionId, 'CHALLENGE_PASSED', 'Liveness challenge passed.', {
+          challenge: attemptedChallenge,
+          attempt: updated.attempts
+        });
+        await logEvent(session.sessionId, 'SESSION_VERIFIED', 'Session fully verified.', {
+          attempts: updated.attempts,
+          faceMatchScore: updated.faceMatchScore
         });
       }
 
-      await logEvent(session.sessionId, 'CHALLENGE_ATTEMPTED', `Liveness challenge attempted: ${attemptedChallenge || 'unknown'}.`, {
-        challenge: attemptedChallenge,
-        attempt: updated.attempts,
-        success: true
-      });
-      await logEvent(session.sessionId, 'CHALLENGE_PASSED', 'Liveness challenge passed.', {
-        challenge: attemptedChallenge,
-        attempt: updated.attempts
-      });
-      await logEvent(session.sessionId, 'SESSION_VERIFIED', 'Session fully verified.', {
-        attempts: updated.attempts,
-        faceMatchScore: updated.faceMatchScore
-      });
-
+      // CRITICAL: File deletion happens AFTER transaction commits (disk is not transactional)
       await cleanupSessionMedia(updated);
 
       return res.status(200).json({
@@ -521,32 +614,76 @@ const verifyChallenge = async (req, res) => {
       }
 
       // Attempt 2 Failure conditional update (attempts >= 1 -> terminal FAILED)
-      const attempt2Updated = await Session.findOneAndUpdate(
-        { sessionId, status: 'FACE_VERIFIED', attempts: { $gte: 1 } },
-        {
-          $inc: { attempts: 1 },
-          $set: {
-            status: "FAILED",
-            completedAt: new Date()
-          }
-        },
-        { new: true }
-      );
+      let attempt2Updated;
+      const isReplica = await connectDB.isReplicaSet();
+
+      if (isReplica) {
+        const dbSession = await mongoose.startSession();
+        try {
+          await dbSession.withTransaction(async () => {
+            attempt2Updated = await Session.findOneAndUpdate(
+              { sessionId, status: 'FACE_VERIFIED', attempts: { $gte: 1 } },
+              {
+                $inc: { attempts: 1 },
+                $set: {
+                  status: "FAILED",
+                  completedAt: new Date()
+                }
+              },
+              { new: true, session: dbSession }
+            );
+
+            if (!attempt2Updated) {
+              return;
+            }
+
+            await logEvent(session.sessionId, 'CHALLENGE_ATTEMPTED', `Liveness challenge attempted: ${attemptedChallenge || 'unknown'}.`, {
+              challenge: attemptedChallenge,
+              attempt: attempt2Updated.attempts,
+              success: false
+            }, dbSession);
+            await logEvent(session.sessionId, 'CHALLENGE_FAILED', 'Liveness challenge failed; no attempts remaining.', {
+              challenge: attemptedChallenge,
+              attempt: attempt2Updated.attempts
+            }, dbSession);
+            await logEvent(session.sessionId, 'SESSION_FAILED', 'Session failed after exhausting challenge attempts.', {
+              attempts: attempt2Updated.attempts
+            }, dbSession);
+          });
+        } finally {
+          await dbSession.endSession();
+        }
+      } else {
+        attempt2Updated = await Session.findOneAndUpdate(
+          { sessionId, status: 'FACE_VERIFIED', attempts: { $gte: 1 } },
+          {
+            $inc: { attempts: 1 },
+            $set: {
+              status: "FAILED",
+              completedAt: new Date()
+            }
+          },
+          { new: true }
+        );
+
+        if (attempt2Updated) {
+          await logEvent(session.sessionId, 'CHALLENGE_ATTEMPTED', `Liveness challenge attempted: ${attemptedChallenge || 'unknown'}.`, {
+            challenge: attemptedChallenge,
+            attempt: attempt2Updated.attempts,
+            success: false
+          });
+          await logEvent(session.sessionId, 'CHALLENGE_FAILED', 'Liveness challenge failed; no attempts remaining.', {
+            challenge: attemptedChallenge,
+            attempt: attempt2Updated.attempts
+          });
+          await logEvent(session.sessionId, 'SESSION_FAILED', 'Session failed after exhausting challenge attempts.', {
+            attempts: attempt2Updated.attempts
+          });
+        }
+      }
 
       if (attempt2Updated) {
-        await logEvent(session.sessionId, 'CHALLENGE_ATTEMPTED', `Liveness challenge attempted: ${attemptedChallenge || 'unknown'}.`, {
-          challenge: attemptedChallenge,
-          attempt: attempt2Updated.attempts,
-          success: false
-        });
-        await logEvent(session.sessionId, 'CHALLENGE_FAILED', 'Liveness challenge failed; no attempts remaining.', {
-          challenge: attemptedChallenge,
-          attempt: attempt2Updated.attempts
-        });
-        await logEvent(session.sessionId, 'SESSION_FAILED', 'Session failed after exhausting challenge attempts.', {
-          attempts: attempt2Updated.attempts
-        });
-
+        // File deletion happens AFTER transaction commits
         await cleanupSessionMedia(attempt2Updated);
 
         return res.status(200).json({

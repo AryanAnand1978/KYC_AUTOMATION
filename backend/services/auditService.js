@@ -3,19 +3,28 @@ const AuditEvent = require('../models/AuditEvent');
 /**
  * Records an audit event for a verification session.
  *
- * This is intentionally fire-and-forget: an audit-logging failure must never
- * break or roll back the verification flow, so errors are caught and logged
- * rather than thrown. Callers may `await` it, but a rejection is impossible.
+ * In a transactional context (when dbSession is provided), errors are NOT swallowed
+ * and are rethrown so the calling transaction is aborted.
+ * Outside a transaction, it acts in a non-blocking fire-and-forget manner.
  *
  * @param {string} sessionId - The session the event belongs to.
  * @param {string} type - One of AuditEvent.TYPES.
  * @param {string} [message] - Human-readable description.
  * @param {object} [meta] - Structured context (score, challenge, attempt, ...).
+ * @param {ClientSession} [dbSession] - Optional Mongoose ClientSession for ACID transactions.
  */
-async function logEvent(sessionId, type, message = '', meta = {}) {
+async function logEvent(sessionId, type, message = '', meta = {}, dbSession = null) {
   try {
-    await AuditEvent.create({ sessionId, type, message, meta });
+    if (dbSession) {
+      await AuditEvent.create([{ sessionId, type, message, meta }], { session: dbSession });
+    } else {
+      await AuditEvent.create({ sessionId, type, message, meta });
+    }
   } catch (err) {
+    if (dbSession) {
+      // Inside a transactional context, rethrow to abort transaction
+      throw err;
+    }
     console.error(`[Audit] Failed to log ${type} for session ${sessionId}:`, err.message);
   }
 }

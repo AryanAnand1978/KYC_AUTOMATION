@@ -93,6 +93,23 @@ setInterval(async () => {
         console.log(`[Expiry Job] Cleaned up media and expired session: ${session.sessionId}`);
       }
     }
+
+    // SWEEPER: Find terminal sessions (VERIFIED, FAILED, EXPIRED) with uncleared media paths or orphaned files
+    const terminalSessionsWithFiles = await Session.find({
+      status: { $in: ["VERIFIED", "FAILED", "EXPIRED"] },
+      $or: [
+        { aadhaarImagePath: { $ne: "" } },
+        { aadhaarFacePath: { $ne: "" } },
+        { selfieImagePath: { $ne: "" } }
+      ]
+    });
+
+    if (terminalSessionsWithFiles.length > 0) {
+      console.log(`[Media Sweeper] Found ${terminalSessionsWithFiles.length} terminal session(s) with uncleared media paths. Cleaning...`);
+      for (const session of terminalSessionsWithFiles) {
+        await cleanupSessionMedia(session);
+      }
+    }
   } catch (err) {
     console.error('[Expiry Job Error]:', err.message);
   }
