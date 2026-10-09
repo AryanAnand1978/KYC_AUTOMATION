@@ -8,3 +8,7 @@ node_modules/
 
 # Images
 *.png
+
+# Backups
+backend/backups/
+backups/
