@@ -63,11 +63,11 @@ setInterval(async () => {
   try {
     const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
     
-    // Find sessions that are PENDING or FACE_VERIFIED but created more than 10 minutes ago
+    // Find sessions that are PENDING or FACE_VERIFIED but created more than 10 minutes ago (capped per tick)
     const expiredSessions = await Session.find({
       status: { $in: ["PENDING", "FACE_VERIFIED"] },
       createdAt: { $lt: tenMinutesAgo }
-    });
+    }).limit(50);
 
     if (expiredSessions.length > 0) {
       console.log(`[Expiry Job] Found ${expiredSessions.length} expired session(s). Initializing cleanup...`);
@@ -94,7 +94,7 @@ setInterval(async () => {
       }
     }
 
-    // SWEEPER: Find terminal sessions (VERIFIED, FAILED, EXPIRED) with uncleared media paths or orphaned files
+    // SWEEPER: Find terminal sessions (VERIFIED, FAILED, EXPIRED) with uncleared media paths or orphaned files (capped per tick)
     const terminalSessionsWithFiles = await Session.find({
       status: { $in: ["VERIFIED", "FAILED", "EXPIRED"] },
       $or: [
@@ -102,7 +102,7 @@ setInterval(async () => {
         { aadhaarFacePath: { $ne: "" } },
         { selfieImagePath: { $ne: "" } }
       ]
-    });
+    }).limit(50);
 
     if (terminalSessionsWithFiles.length > 0) {
       console.log(`[Media Sweeper] Found ${terminalSessionsWithFiles.length} terminal session(s) with uncleared media paths. Cleaning...`);

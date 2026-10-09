@@ -28,13 +28,7 @@ const LAST_NAMES = [
 const STATUSES = ['PENDING', 'FACE_VERIFIED', 'VERIFIED', 'FAILED', 'EXPIRED'];
 const CHALLENGES = ['SHOW_LEFT_HAND', 'SHOW_RIGHT_HAND', 'TURN_HEAD_LEFT', 'TURN_HEAD_RIGHT'];
 
-function getBenchmarkUri() {
-  const uri = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/kyc-verification';
-  // Ensure target is strictly the separate benchmark database
-  return uri.includes('?') 
-    ? uri.replace(/\/[^/?]+(\?)/, '/kyc-benchmark$1')
-    : (uri.endsWith('/') ? `${uri}kyc-benchmark` : `${uri}/kyc-benchmark`);
-}
+const { connectBenchDB } = require('./lib/benchDb');
 
 function randomItem(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
@@ -46,16 +40,13 @@ function randomInt(min, max) {
 
 async function run() {
   const args = process.argv.slice(2);
-  const benchmarkUri = getBenchmarkUri();
-
-  console.log('Connecting to Benchmark Database:', benchmarkUri.replace(/\/\/([^:]+):([^@]+)@/, '//***:***@'));
-  await mongoose.connect(benchmarkUri);
+  await connectBenchDB('kyc-benchmark');
   const collection = mongoose.connection.collection('sessions');
 
   if (args.includes('--clean')) {
-    console.log('[Seed] Cleaning existing benchmark documents...');
-    const delRes = await collection.deleteMany({});
-    console.log(`[Seed] Deleted ${delRes.deletedCount} benchmark documents.`);
+    console.log('[Seed] Cleaning existing seeded benchmark documents in kyc-benchmark...');
+    const delRes = await collection.deleteMany({ seeded: true });
+    console.log(`[Seed] Deleted ${delRes.deletedCount} seeded benchmark documents.`);
     await mongoose.disconnect();
     process.exit(0);
   }

@@ -15,10 +15,11 @@ const mongoose = require('mongoose');
 const crypto = require('crypto');
 const Session = require('../models/Session');
 const AuditEvent = require('../models/AuditEvent');
+const { connectBenchDB } = require('./lib/benchDb');
 const connectDB = require('../config/db');
 
 async function run() {
-  await connectDB();
+  await connectBenchDB('kyc-demo');
   const isReplica = await connectDB.isReplicaSet();
   console.log('MongoDB Replica Set status:', isReplica);
 

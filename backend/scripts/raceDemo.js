@@ -22,17 +22,12 @@ const mongoose = require('mongoose');
 const crypto = require('crypto');
 const Session = require('../models/Session');
 
+const { connectBenchDB } = require('./lib/benchDb');
 const N = 10; // Number of concurrent requests
 
 // Connect to MongoDB
 async function initDB() {
-  const uri = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/kyc-verification';
-  // Use demo database to avoid touching real data
-  const demoUri = uri.includes('?') 
-    ? uri.replace(/\/[^/?]+(\?)/, '/kyc-demo$1')
-    : (uri.endsWith('/') ? `${uri}kyc-demo` : `${uri}/kyc-demo`);
-  
-  await mongoose.connect(demoUri);
+  await connectBenchDB('kyc-demo');
 }
 
 // Simulated Legacy Transition (Check-then-save)

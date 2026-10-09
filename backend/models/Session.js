@@ -12,8 +12,7 @@ const sessionSchema = new mongoose.Schema({
   },
   nameLower: {
     type: String,
-    default: '',
-    index: true
+    default: ''
   },
   // PII is stored metadata-only. We keep a salted, non-reversible hash
   // (for distinct-applicant analytics) and a masked value (for display).

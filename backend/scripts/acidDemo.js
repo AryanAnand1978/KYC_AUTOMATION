@@ -25,13 +25,10 @@ const Session = require('../models/Session');
 const AuditEvent = require('../models/AuditEvent');
 const connectDB = require('../config/db');
 
+const { connectBenchDB } = require('./lib/benchDb');
+
 async function initDB() {
-  const uri = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/kyc-verification';
-  const demoUri = uri.includes('?') 
-    ? uri.replace(/\/[^/?]+(\?)/, '/kyc-demo$1')
-    : (uri.endsWith('/') ? `${uri}kyc-demo` : `${uri}/kyc-demo`);
-  
-  await mongoose.connect(demoUri);
+  await connectBenchDB('kyc-demo');
 }
 
 // Case A: Non-transactional execution with injected failure
@@ -153,7 +150,7 @@ async function runDemo() {
 
   // Cleanup test documents
   await Session.deleteMany({ sessionId: { $in: [noTxSessionId, txSessionId] } });
-  await AuditEvent.deleteMany({ sessionId: { $in: [noTxSessionId, txSessionId] } });
+  await mongoose.connection.collection('auditevents').deleteMany({ sessionId: { $in: [noTxSessionId, txSessionId] } });
   console.log('Cleaned up demo session documents.');
   console.log('===============================================================');
 

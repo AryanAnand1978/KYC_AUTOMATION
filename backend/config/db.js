@@ -23,8 +23,11 @@ async function isReplicaSet() {
 
 const connectDB = async () => {
   try {
-    const conn = await mongoose.connect(process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/kyc-verification');
-    console.log(`MongoDB Connected: ${conn.connection.host}`);
+    const dbName = process.env.DB_NAME || 'kyc-verification';
+    const conn = await mongoose.connect(process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/kyc-verification', {
+      dbName
+    });
+    console.log(`MongoDB Connected: ${conn.connection.host} (Database: ${conn.connection.name})`);
 
     const replicaSetAvailable = await isReplicaSet();
     if (!replicaSetAvailable) {
