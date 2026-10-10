@@ -43,6 +43,13 @@ const deleteFile = (filePath) => {
 // Helper to clean up all media files for a session (idempotent)
 const cleanupSessionMedia = async (session) => {
   if (!session) return;
+  const hasFiles = Boolean(session.aadhaarImagePath || session.aadhaarFacePath || session.selfieImagePath);
+
+  // If no file paths recorded, nothing to delete or audit
+  if (!hasFiles) {
+    return;
+  }
+
   console.log(`Cleaning up media for session: ${session.sessionId}`);
   deleteFile(session.aadhaarImagePath);
   deleteFile(session.aadhaarFacePath);
@@ -53,21 +60,19 @@ const cleanupSessionMedia = async (session) => {
   deleteFile(challengeFramePath);
 
   // Clear path fields in database to ensure idempotency and prevent duplicate deletion
-  if (session.aadhaarImagePath || session.aadhaarFacePath || session.selfieImagePath) {
-    try {
-      await Session.updateOne(
-        { _id: session._id },
-        {
-          $set: {
-            aadhaarImagePath: '',
-            aadhaarFacePath: '',
-            selfieImagePath: ''
-          }
+  try {
+    await Session.updateOne(
+      { _id: session._id },
+      {
+        $set: {
+          aadhaarImagePath: '',
+          aadhaarFacePath: '',
+          selfieImagePath: ''
         }
-      );
-    } catch (dbErr) {
-      console.error('Failed to clear file path fields in session document:', dbErr.message);
-    }
+      }
+    );
+  } catch (dbErr) {
+    console.error('Failed to clear file path fields in session document:', dbErr.message);
   }
 
   await logEvent(session.sessionId, 'MEDIA_CLEANED', 'Biometric media files removed from disk.');

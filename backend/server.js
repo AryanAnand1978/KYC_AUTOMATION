@@ -98,9 +98,9 @@ setInterval(async () => {
     const terminalSessionsWithFiles = await Session.find({
       status: { $in: ["VERIFIED", "FAILED", "EXPIRED"] },
       $or: [
-        { aadhaarImagePath: { $ne: "" } },
-        { aadhaarFacePath: { $ne: "" } },
-        { selfieImagePath: { $ne: "" } }
+        { aadhaarImagePath: { $gt: "" } },
+        { aadhaarFacePath: { $gt: "" } },
+        { selfieImagePath: { $gt: "" } }
       ]
     }).limit(50);
 
